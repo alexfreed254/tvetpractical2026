@@ -1,14 +1,8 @@
-# Python
-__pycache__/
-*.py[cod]
-.venv/
-venv/
-.env
-# Node
 node_modules/
+build/
 dist/
-*.local
-# OS / editor
+coverage/
 .DS_Store
-.vscode/
-.idea/
+*.log
+.env*
+!.env.example

@@ -1,0 +1,3245 @@
+create a downloadable zip folder for this project and arra arrange each code file in appropriate fiolder  TVET e-ASSESS – Complete Implementation
+I'll implement this as a fully functional module. Let me build it systematically, starting with the database schema, then the UI components that closely reproduce the reference document.
+1. Database Schema
+sql
+-- supabase/schema.sql
+-- TVET e-ASSESS Database Schema
+
+-- Enable UUID extension
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+-- Institutions
+CREATE TABLE institutions (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  name TEXT NOT NULL,
+  department TEXT NOT NULL,
+  logo_url TEXT,
+  competency_threshold DECIMAL(5,2) DEFAULT 50.00,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Departments
+CREATE TABLE departments (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  institution_id UUID REFERENCES institutions(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Courses
+CREATE TABLE courses (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  department_id UUID REFERENCES departments(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  level TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Units
+CREATE TABLE units (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  course_id UUID REFERENCES courses(id) ON DELETE CASCADE,
+  unit_code TEXT NOT NULL,
+  unit_name TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Classes
+CREATE TABLE classes (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  course_id UUID REFERENCES courses(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  academic_year TEXT NOT NULL,
+  term TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Trainees
+CREATE TABLE trainees (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  admission_number TEXT UNIQUE NOT NULL,
+  full_name TEXT NOT NULL,
+  class_id UUID REFERENCES classes(id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Assessments (templates)
+CREATE TABLE assessments (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  institution_id UUID REFERENCES institutions(id) ON DELETE CASCADE,
+  department_id UUID REFERENCES departments(id),
+  course_id UUID REFERENCES courses(id),
+  unit_id UUID REFERENCES units(id),
+  class_id UUID REFERENCES classes(id),
+  title TEXT NOT NULL,
+  assessment_number INTEGER NOT NULL,
+  assessment_type TEXT DEFAULT 'PRACTICAL',
+  assessment_date DATE,
+  duration_minutes INTEGER,
+  academic_year TEXT,
+  term TEXT,
+  status TEXT DEFAULT 'draft' CHECK (status IN ('draft', 'published', 'archived')),
+  created_by UUID REFERENCES auth.users(id),
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Assessment versions (for audit trail)
+CREATE TABLE assessment_versions (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  assessment_id UUID REFERENCES assessments(id) ON DELETE CASCADE,
+  version_number INTEGER NOT NULL,
+  published_at TIMESTAMPTZ DEFAULT NOW(),
+  published_by UUID REFERENCES auth.users(id),
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Assessment tasks
+CREATE TABLE assessment_tasks (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  assessment_id UUID REFERENCES assessments(id) ON DELETE CASCADE,
+  task_number INTEGER NOT NULL,
+  task_title TEXT NOT NULL,
+  sort_order INTEGER NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Assessment items (criteria)
+CREATE TABLE assessment_items (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  task_id UUID REFERENCES assessment_tasks(id) ON DELETE CASCADE,
+  item_number TEXT NOT NULL,
+  description TEXT NOT NULL,
+  max_marks DECIMAL(5,2) NOT NULL DEFAULT 0,
+  is_subcriterion BOOLEAN DEFAULT FALSE,
+  parent_item_id UUID REFERENCES assessment_items(id) ON DELETE CASCADE,
+  sort_order INTEGER NOT NULL,
+  instruction TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Observation checklists (separate from task criteria)
+CREATE TABLE observation_checklists (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  assessment_id UUID REFERENCES assessments(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  instruction TEXT,
+  sort_order INTEGER NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Checklist criteria
+CREATE TABLE checklist_criteria (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  checklist_id UUID REFERENCES observation_checklists(id) ON DELETE CASCADE,
+  item_number TEXT NOT NULL,
+  description TEXT NOT NULL,
+  max_marks DECIMAL(5,2) NOT NULL DEFAULT 0,
+  is_subitem BOOLEAN DEFAULT FALSE,
+  parent_criteria_id UUID REFERENCES checklist_criteria(id) ON DELETE CASCADE,
+  sort_order INTEGER NOT NULL,
+  performance_indicator TEXT,
+  competency_standard TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Assessment sessions (instances of assessment for a trainee)
+CREATE TABLE assessment_sessions (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  assessment_id UUID REFERENCES assessments(id) ON DELETE CASCADE,
+  assessment_version_id UUID REFERENCES assessment_versions(id),
+  trainee_id UUID REFERENCES trainees(id) ON DELETE CASCADE,
+  assessor_id UUID REFERENCES auth.users(id),
+  assessment_date DATE NOT NULL,
+  venue TEXT,
+  status TEXT DEFAULT 'in_progress' CHECK (status IN ('in_progress', 'submitted', 'verified', 'returned', 'rejected')),
+  grand_total_available DECIMAL(7,2) DEFAULT 0,
+  grand_total_obtained DECIMAL(7,2) DEFAULT 0,
+  percentage DECIMAL(5,2) DEFAULT 0,
+  competency_outcome TEXT CHECK (competency_outcome IN ('Competent', 'Not Yet Competent', 'Pending')),
+  verifier_id UUID REFERENCES auth.users(id),
+  verified_at TIMESTAMPTZ,
+  verification_status TEXT CHECK (verification_status IN ('pending', 'approved', 'returned', 'rejected')),
+  verification_notes TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Criterion results (marks awarded per item)
+CREATE TABLE criterion_results (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  session_id UUID REFERENCES assessment_sessions(id) ON DELETE CASCADE,
+  item_id UUID REFERENCES assessment_items(id) ON DELETE CASCADE,
+  marks_obtained DECIMAL(5,2) DEFAULT 0,
+  comments TEXT,
+  observations TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(session_id, item_id)
+);
+
+-- Checklist results
+CREATE TABLE checklist_results (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  session_id UUID REFERENCES assessment_sessions(id) ON DELETE CASCADE,
+  criteria_id UUID REFERENCES checklist_criteria(id) ON DELETE CASCADE,
+  marks_obtained DECIMAL(5,2) DEFAULT 0,
+  comments TEXT,
+  observations TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(session_id, criteria_id)
+);
+
+-- Assessment feedback
+CREATE TABLE assessment_feedback (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  session_id UUID REFERENCES assessment_sessions(id) ON DELETE CASCADE,
+  feedback_from_candidate TEXT,
+  feedback_to_candidate TEXT,
+  candidate_signature_url TEXT,
+  assessor_signature_url TEXT,
+  candidate_signed_at TIMESTAMPTZ,
+  assessor_signed_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Generated documents (PDFs)
+CREATE TABLE generated_documents (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  session_id UUID REFERENCES assessment_sessions(id) ON DELETE CASCADE,
+  document_type TEXT NOT NULL,
+  storage_path TEXT NOT NULL,
+  public_url TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Audit log
+CREATE TABLE audit_log (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  table_name TEXT NOT NULL,
+  record_id UUID NOT NULL,
+  action TEXT NOT NULL,
+  old_values JSONB,
+  new_values JSONB,
+  performed_by UUID REFERENCES auth.users(id),
+  performed_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Row Level Security
+ALTER TABLE institutions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE departments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE courses ENABLE ROW LEVEL SECURITY;
+ALTER TABLE units ENABLE ROW LEVEL SECURITY;
+ALTER TABLE classes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE trainees ENABLE ROW LEVEL SECURITY;
+ALTER TABLE assessments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE assessment_tasks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE assessment_items ENABLE ROW LEVEL SECURITY;
+ALTER TABLE observation_checklists ENABLE ROW LEVEL SECURITY;
+ALTER TABLE checklist_criteria ENABLE ROW LEVEL SECURITY;
+ALTER TABLE assessment_sessions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE criterion_results ENABLE ROW LEVEL SECURITY;
+ALTER TABLE checklist_results ENABLE ROW LEVEL SECURITY;
+ALTER TABLE assessment_feedback ENABLE ROW LEVEL SECURITY;
+ALTER TABLE generated_documents ENABLE ROW LEVEL SECURITY;
+
+-- RLS Policies
+CREATE POLICY "Public institutions" ON institutions FOR SELECT USING (true);
+CREATE POLICY "Authenticated can view departments" ON departments FOR SELECT USING (auth.role() = 'authenticated');
+CREATE POLICY "Authenticated can view courses" ON courses FOR SELECT USING (auth.role() = 'authenticated');
+CREATE POLICY "Authenticated can view units" ON units FOR SELECT USING (auth.role() = 'authenticated');
+CREATE POLICY "Authenticated can view classes" ON classes FOR SELECT USING (auth.role() = 'authenticated');
+CREATE POLICY "Authenticated can view trainees" ON trainees FOR SELECT USING (auth.role() = 'authenticated');
+CREATE POLICY "Authenticated can view assessments" ON assessments FOR SELECT USING (auth.role() = 'authenticated');
+CREATE POLICY "Trainers can create assessments" ON assessments FOR INSERT WITH CHECK (auth.role() = 'authenticated');
+CREATE POLICY "Trainers can update own assessments" ON assessments FOR UPDATE USING (created_by = auth.uid());
+CREATE POLICY "Authenticated can view sessions" ON assessment_sessions FOR SELECT USING (auth.role() = 'authenticated');
+CREATE POLICY "Assessors can create sessions" ON assessment_sessions FOR INSERT WITH CHECK (auth.role() = 'authenticated');
+CREATE POLICY "Assessors can update own sessions" ON assessment_sessions FOR UPDATE USING (assessor_id = auth.uid() AND status = 'in_progress');
+
+-- Indexes
+CREATE INDEX idx_assessments_status ON assessments(status);
+CREATE INDEX idx_sessions_assessment ON assessment_sessions(assessment_id);
+CREATE INDEX idx_sessions_trainee ON assessment_sessions(trainee_id);
+CREATE INDEX idx_sessions_status ON assessment_sessions(status);
+CREATE INDEX idx_criterion_results_session ON criterion_results(session_id);
+CREATE INDEX idx_checklist_results_session ON checklist_results(session_id);
+2. Project Structure
+tvet-eassess/
+├── supabase/
+│   └── schema.sql
+├── public/
+│   └── logo.png
+├── app/
+│   ├── layout.js
+│   ├── page.js
+│   ├── globals.css
+│   ├── assessments/
+│   │   ├── page.js
+│   │   ├── builder/
+│   │   │   └── page.js
+│   │   ├── [id]/
+│   │   │   ├── page.js
+│   │   │   └── execute/
+│   │   │       └── page.js
+│   │   └── sessions/
+│   │       └── [id]/
+│   │           └── page.js
+│   └── api/
+│       ├── assessments/
+│       │   └── route.js
+│       ├── sessions/
+│       │   └── route.js
+│       └── generate-pdf/
+│           └── route.js
+├── components/
+│   ├── AssessmentPaper.js
+│   ├── AssessmentBuilder.js
+│   ├── DigitalAssessment.js
+│   ├── LivePreview.js
+│   ├── TaskEditor.js
+│   ├── CriteriaEditor.js
+│   ├── ChecklistEditor.js
+│   └── ui/
+│       ├── Button.js
+│       ├── Modal.js
+│       └── Toast.js
+├── lib/
+│   ├── supabase.js
+│   ├── calculations.js
+│   └── pdf-generator.js
+├── package.json
+└── next.config.js
+3. Core Files
+package.json
+json
+{
+  "name": "tvet-eassess",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  },
+  "dependencies": {
+    "next": "^14.2.0",
+    "react": "^18.3.0",
+    "react-dom": "^18.3.0",
+    "@supabase/supabase-js": "^2.45.0",
+    "bootstrap": "^5.3.3",
+    "bootstrap-icons": "^1.11.3",
+    "@react-pdf/renderer": "^3.4.4",
+    "uuid": "^9.0.1",
+    "date-fns": "^3.6.0"
+  }
+}
+lib/supabase.js
+javascript
+import { createClient } from '@supabase/supabase-js';
+
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+
+export const getServerSupabase = (serverToken) => {
+  return createClient(supabaseUrl, supabaseAnonKey, {
+    global: { headers: { Authorization: `Bearer ${serverToken}` } }
+  });
+};
+lib/calculations.js
+javascript
+// Calculation engine for TVET assessments
+
+export function calculateTaskSubtotal(items, results) {
+  let subtotal = 0;
+  items.forEach(item => {
+    const result = results.find(r => r.item_id === item.id);
+    if (result) {
+      subtotal += parseFloat(result.marks_obtained) || 0;
+    }
+  });
+  return subtotal;
+}
+
+export function calculateChecklistSubtotal(criteria, results) {
+  let subtotal = 0;
+  criteria.forEach(c => {
+    const result = results.find(r => r.criteria_id === c.id);
+    if (result) {
+      subtotal += parseFloat(result.marks_obtained) || 0;
+    }
+  });
+  return subtotal;
+}
+
+export function calculateGrandTotal(taskSubtotals, checklistSubtotal = 0) {
+  const taskTotal = taskSubtotals.reduce((sum, t) => sum + t, 0);
+  return taskTotal + checklistSubtotal;
+}
+
+export function calculatePercentage(obtained, available) {
+  if (available === 0) return 0;
+  return (obtained / available) * 100;
+}
+
+export function determineCompetency(percentage, threshold = 50) {
+  return percentage >= threshold ? 'Competent' : 'Not Yet Competent';
+}
+
+export function calculateTotalAvailable(tasks, checklists) {
+  let total = 0;
+  tasks.forEach(task => {
+    task.items.forEach(item => {
+      if (!item.is_subcriterion) {
+        total += parseFloat(item.max_marks) || 0;
+      }
+    });
+  });
+  checklists.forEach(cl => {
+    cl.criteria.forEach(c => {
+      if (!c.is_subitem) {
+        total += parseFloat(c.max_marks) || 0;
+      }
+    });
+  });
+  return total;
+}
+
+export function validateMarks(marksObtained, maxMarks) {
+  const obtained = parseFloat(marksObtained) || 0;
+  const max = parseFloat(maxMarks) || 0;
+  if (obtained < 0) return { valid: false, error: 'Negative marks not allowed' };
+  if (obtained > max) return { valid: false, error: `Cannot exceed maximum marks (${max})` };
+  return { valid: true, value: obtained };
+}
+app/globals.css
+css
+@import 'bootstrap/dist/css/bootstrap.min.css';
+@import 'bootstrap-icons/font/bootstrap-icons.css';
+
+:root {
+  --a4-width: 210mm;
+  --a4-height: 297mm;
+  --page-margin: 15mm;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  font-family: 'Times New Roman', Times, serif;
+  background-color: #f0f2f5;
+  margin: 0;
+  padding: 0;
+}
+
+/* A4 Paper Styles */
+.a4-page {
+  width: var(--a4-width);
+  min-height: var(--a4-height);
+  background: white;
+  margin: 20px auto;
+  padding: var(--page-margin);
+  box-shadow: 0 2px 10px rgba(0,0,0,0.15);
+  position: relative;
+  page-break-after: always;
+}
+
+.a4-page:last-child {
+  page-break-after: auto;
+}
+
+/* Institution Header */
+.institution-header {
+  text-align: center;
+  margin-bottom: 20px;
+  border-bottom: 2px solid #000;
+  padding-bottom: 10px;
+}
+
+.institution-logo {
+  max-width: 80px;
+  max-height: 80px;
+  margin-bottom: 8px;
+}
+
+.institution-name {
+  font-size: 18pt;
+  font-weight: bold;
+  text-transform: uppercase;
+  margin: 5px 0;
+  letter-spacing: 1px;
+}
+
+.department-name {
+  font-size: 14pt;
+  font-weight: bold;
+  text-transform: uppercase;
+  margin: 5px 0;
+}
+
+.course-title {
+  font-size: 12pt;
+  font-weight: bold;
+  text-transform: uppercase;
+  margin: 5px 0;
+}
+
+.qualification-level {
+  font-size: 11pt;
+  font-weight: bold;
+  text-transform: uppercase;
+  margin: 5px 0;
+}
+
+.unit-code {
+  font-size: 10pt;
+  margin: 3px 0;
+}
+
+.unit-name {
+  font-size: 11pt;
+  font-weight: bold;
+  margin: 5px 0;
+}
+
+.assessment-type {
+  font-size: 12pt;
+  font-weight: bold;
+  text-transform: uppercase;
+  margin: 10px 0 5px 0;
+}
+
+/* Candidate Info Table */
+.candidate-info-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 15px 0;
+  font-size: 10pt;
+}
+
+.candidate-info-table td {
+  border: 1px solid #000;
+  padding: 4px 8px;
+}
+
+.candidate-info-table .label-cell {
+  font-weight: bold;
+  width: 180px;
+  background-color: #f8f9fa;
+}
+
+/* Assessment Tables */
+.assessment-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 10px 0;
+  font-size: 9pt;
+}
+
+.assessment-table th,
+.assessment-table td {
+  border: 1px solid #000;
+  padding: 4px 6px;
+  vertical-align: top;
+}
+
+.assessment-table th {
+  background-color: #f0f0f0;
+  font-weight: bold;
+  text-align: center;
+}
+
+.assessment-table .item-column {
+  width: 55%;
+}
+
+.assessment-table .marks-column {
+  width: 12%;
+  text-align: center;
+}
+
+.assessment-table .obtained-column {
+  width: 12%;
+  text-align: center;
+}
+
+.assessment-table .comments-column {
+  width: 21%;
+}
+
+.task-header-row {
+  background-color: #e9ecef !important;
+  font-weight: bold;
+  text-align: center;
+  font-size: 10pt;
+}
+
+.subtotal-row {
+  font-weight: bold;
+  background-color: #f8f9fa;
+}
+
+.grand-total-row {
+  font-weight: bold;
+  background-color: #e9ecef;
+  font-size: 10pt;
+}
+
+/* Subcriteria indentation */
+.subcriterion {
+  padding-left: 20px;
+  font-size: 9pt;
+}
+
+.subcriterion::before {
+  content: '• ';
+}
+
+/* Outcome section */
+.outcome-section {
+  border: 1px solid #000;
+  padding: 10px;
+  margin: 15px 0;
+}
+
+.outcome-title {
+  font-weight: bold;
+  text-align: center;
+  text-transform: uppercase;
+  margin-bottom: 10px;
+  font-size: 10pt;
+}
+
+.checkbox-option {
+  display: inline-block;
+  margin-right: 30px;
+  font-size: 10pt;
+}
+
+.checkbox-box {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border: 1px solid #000;
+  margin-right: 5px;
+  vertical-align: middle;
+}
+
+/* Feedback section */
+.feedback-section {
+  margin: 15px 0;
+  font-size: 10pt;
+}
+
+.feedback-title {
+  font-weight: bold;
+  font-style: italic;
+  margin-bottom: 5px;
+}
+
+.feedback-box {
+  border: 1px solid #000;
+  min-height: 60px;
+  padding: 5px;
+  margin-bottom: 10px;
+}
+
+.signature-line {
+  border-bottom: 1px solid #000;
+  display: inline-block;
+  min-width: 200px;
+  margin: 0 10px;
+}
+
+.signature-row {
+  margin: 15px 0;
+  font-size: 10pt;
+}
+
+/* Builder Layout */
+.builder-container {
+  display: flex;
+  gap: 20px;
+  padding: 20px;
+  min-height: 100vh;
+}
+
+.builder-left-panel {
+  flex: 1;
+  min-width: 400px;
+  max-width: 50%;
+  background: white;
+  padding: 20px;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  overflow-y: auto;
+  max-height: 100vh;
+}
+
+.builder-right-panel {
+  flex: 1;
+  min-width: 400px;
+  background: #e9ecef;
+  padding: 20px;
+  overflow-y: auto;
+  max-height: 100vh;
+}
+
+/* Digital Assessment */
+.digital-assessment {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+.marks-input {
+  width: 80px;
+  text-align: center;
+  border: 1px solid #ced4da;
+  border-radius: 4px;
+  padding: 4px;
+}
+
+.marks-input:invalid {
+  border-color: #dc3545;
+}
+
+/* Print styles */
+@media print {
+  body {
+    background: white;
+  }
+  .a4-page {
+    margin: 0;
+    box-shadow: none;
+    page-break-after: always;
+  }
+  .no-print {
+    display: none !important;
+  }
+}
+
+/* Responsive */
+@media (max-width: 1200px) {
+  .builder-container {
+    flex-direction: column;
+  }
+  .builder-left-panel,
+  .builder-right-panel {
+    max-width: 100%;
+    max-height: none;
+  }
+}
+
+/* Page number */
+.page-number {
+  position: absolute;
+  bottom: 10mm;
+  right: 15mm;
+  font-size: 9pt;
+  color: #666;
+}
+
+/* Section headings in document */
+.section-heading {
+  font-weight: bold;
+  text-align: center;
+  text-transform: uppercase;
+  font-size: 10pt;
+  margin: 10px 0 5px 0;
+  letter-spacing: 0.5px;
+}
+
+.instruction-text {
+  font-size: 9pt;
+  font-style: italic;
+  margin: 5px 0;
+  color: #333;
+}
+
+.percentage-formula {
+  text-align: center;
+  font-size: 10pt;
+  margin: 10px 0;
+  font-family: 'Times New Roman', serif;
+}
+
+.percentage-formula .fraction {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  vertical-align: middle;
+  margin: 0 5px;
+}
+
+.percentage-formula .numerator {
+  border-bottom: 1px solid #000;
+  padding: 0 5px 2px 5px;
+}
+
+.percentage-formula .denominator {
+  padding: 2px 5px 0 5px;
+}
+4. Assessment Paper Component (Matches Reference Image)
+components/AssessmentPaper.js
+javascript
+import React from 'react';
+
+/**
+ * AssessmentPaper - Renders the official TVET practical assessment document
+ * Closely reproduces the Thika Technical Training Institute reference image
+ */
+export default function AssessmentPaper({ assessment, session, tasks, checklists, results, checklistResults, institution, pageNumber = 1, totalPages = 3 }) {
+  const candidate = session?.trainee || {};
+  const assessor = session?.assessor || {};
+
+  // Calculate totals
+  const calculateSubtotal = (items, itemResults) => {
+    return items.reduce((sum, item) => {
+      if (!item.is_subcriterion) {
+        const r = itemResults?.find(r => r.item_id === item.id);
+        return sum + (r ? parseFloat(r.marks_obtained) || 0 : 0);
+      }
+      return sum;
+    }, 0);
+  };
+
+  const calculateChecklistSubtotal = (criteria, criteriaResults) => {
+    return criteria.reduce((sum, c) => {
+      if (!c.is_subitem) {
+        const r = criteriaResults?.find(r => r.criteria_id === c.id);
+        return sum + (r ? parseFloat(r.marks_obtained) || 0 : 0);
+      }
+      return sum;
+    }, 0);
+  };
+
+  const calculateMaxSubtotal = (items) => {
+    return items.reduce((sum, item) => {
+      if (!item.is_subcriterion) {
+        return sum + (parseFloat(item.max_marks) || 0);
+      }
+      return sum;
+    }, 0);
+  };
+
+  const calculateChecklistMax = (criteria) => {
+    return criteria.reduce((sum, c) => {
+      if (!c.is_subitem) {
+        return sum + (parseFloat(c.max_marks) || 0);
+      }
+      return sum;
+    }, 0);
+  };
+
+  const totalAvailable = tasks.reduce((sum, t) => sum + calculateMaxSubtotal(t.items), 0) +
+    checklists.reduce((sum, cl) => sum + calculateChecklistMax(cl.criteria), 0);
+  const totalObtained = tasks.reduce((sum, t) => sum + calculateSubtotal(t.items, results), 0) +
+    checklists.reduce((sum, cl) => sum + calculateChecklistSubtotal(cl.criteria, checklistResults), 0);
+  const percentage = totalAvailable > 0 ? (totalObtained / totalAvailable) * 100 : 0;
+  const threshold = institution?.competency_threshold || 50;
+  const outcome = percentage >= threshold ? 'Competent' : 'Not Yet Competent';
+
+  return (
+    <div className="a4-page" style={{ padding: '15mm' }}>
+      {/* Page 1: Institution Header and Observation Checklist */}
+      {pageNumber === 1 && (
+        <>
+          {/* Institution Header */}
+          <div className="institution-header">
+            {institution?.logo_url && (
+              <img src={institution.logo_url} alt="Logo" className="institution-logo" />
+            )}
+            <div className="institution-name">{institution?.name || 'THIKA TECHNICAL TRAINING INSTITUTE'}</div>
+            <div className="department-name">{assessment?.department_name || 'ELECTRICAL & ELECTRONICS ENGINEERING'}</div>
+            <div className="course-title">{assessment?.course_title || 'ELECTRICAL INSTALLATION'}</div>
+            <div className="qualification-level">{assessment?.level || 'LEVEL 4, 5 & 6'}</div>
+            <div className="unit-code">Unit Code: {assessment?.unit_code || 'ENG/CU/EI/CR/03/5/MA'}</div>
+            <div className="unit-name">{assessment?.unit_name || 'Install Security System'}</div>
+            <div className="assessment-type">
+              {assessment?.assessment_type || 'PRACTICAL'} ASSESSMENT {assessment?.assessment_number || '1'}
+            </div>
+            <div className="section-heading" style={{ marginTop: '15px' }}>OBSERVATION CHECKLIST</div>
+          </div>
+
+          {/* Candidate Information */}
+          <table className="candidate-info-table">
+            <tbody>
+              <tr>
+                <td className="label-cell">Candidate's Name</td>
+                <td>{candidate?.full_name || session?.candidate_name || ''}</td>
+              </tr>
+              <tr>
+                <td className="label-cell">Candidate's Adm. No.</td>
+                <td>{candidate?.admission_number || session?.admission_number || ''}</td>
+              </tr>
+              <tr>
+                <td className="label-cell">Date of Assessment</td>
+                <td>{session?.assessment_date ? new Date(session.assessment_date).toLocaleDateString() : ''}</td>
+              </tr>
+            </tbody>
+          </table>
+
+          {/* Observation Checklist Table */}
+          <div className="instruction-text">
+            Items to be Evaluated: Please award marks as appropriate. Give a brief comment on your observation.
+          </div>
+
+          <table className="assessment-table">
+            <thead>
+              <tr>
+                <th className="item-column">Item to be Evaluated</th>
+                <th className="marks-column">Marks Available</th>
+                <th className="obtained-column">Marks Obtained</th>
+                <th className="comments-column">Comment</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td colSpan="4" style={{ textAlign: 'center', fontWeight: 'bold', background: '#f0f0f0' }}>
+                  OBSERVATION CHECKLIST
+                </td>
+              </tr>
+              {checklists.map((checklist, idx) => (
+                <React.Fragment key={checklist.id}>
+                  {checklist.criteria.map((criteria) => (
+                    <CriteriaRow
+                      key={criteria.id}
+                      criteria={criteria}
+                      allCriteria={checklist.criteria}
+                      results={checklistResults}
+                      isChecklist={true}
+                    />
+                  ))}
+                  <tr className="subtotal-row">
+                    <td style={{ textAlign: 'right', fontWeight: 'bold' }}>Sub-total {idx + 1}</td>
+                    <td>{calculateChecklistMax(checklist.criteria)}</td>
+                    <td>{calculateChecklistSubtotal(checklist.criteria, checklistResults)}</td>
+                    <td></td>
+                  </tr>
+                </React.Fragment>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
+
+      {/* Page 2: Tasks */}
+      {pageNumber === 2 && (
+        <>
+          {tasks.map((task) => (
+            <div key={task.id} style={{ marginBottom: '15px' }}>
+              <table className="assessment-table">
+                <thead>
+                  <tr>
+                    <th className="item-column" style={{ textAlign: 'center' }}>
+                      TASK {task.task_number} {task.task_title && `- ${task.task_title}`}
+                    </th>
+                    <th className="marks-column">Marks</th>
+                    <th className="obtained-column">Obtained</th>
+                    <th className="comments-column">Comment</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {task.items.map((item) => (
+                    <CriteriaRow
+                      key={item.id}
+                      criteria={item}
+                      allCriteria={task.items}
+                      results={results}
+                      isChecklist={false}
+                    />
+                  ))}
+                  <tr className="subtotal-row">
+                    <td style={{ textAlign: 'right', fontWeight: 'bold' }}>Sub-Total {task.task_number}</td>
+                    <td>{calculateMaxSubtotal(task.items)}</td>
+                    <td>{calculateSubtotal(task.items, results)}</td>
+                    <td></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          ))}
+        </>
+      )}
+
+      {/* Page 3: Final Results and Signatures */}
+      {pageNumber === 3 && (
+        <>
+          {/* Continue tasks if needed */}
+          {tasks.length > 2 && tasks.slice(2).map((task) => (
+            <div key={task.id} style={{ marginBottom: '15px' }}>
+              <table className="assessment-table">
+                <thead>
+                  <tr>
+                    <th className="item-column" style={{ textAlign: 'center' }}>
+                      TASK {task.task_number} {task.task_title && `- ${task.task_title}`}
+                    </th>
+                    <th className="marks-column">Marks</th>
+                    <th className="obtained-column">Obtained</th>
+                    <th className="comments-column">Comment</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {task.items.map((item) => (
+                    <CriteriaRow
+                      key={item.id}
+                      criteria={item}
+                      allCriteria={task.items}
+                      results={results}
+                      isChecklist={false}
+                    />
+                  ))}
+                  <tr className="subtotal-row">
+                    <td style={{ textAlign: 'right', fontWeight: 'bold' }}>Sub-Total {task.task_number}</td>
+                    <td>{calculateMaxSubtotal(task.items)}</td>
+                    <td>{calculateSubtotal(task.items, results)}</td>
+                    <td></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          ))}
+
+          {/* Grand Total */}
+          <table className="assessment-table" style={{ marginTop: '10px' }}>
+            <tbody>
+              <tr className="grand-total-row">
+                <td style={{ textAlign: 'right', fontWeight: 'bold' }}>GRAND TOTAL</td>
+                <td>{totalAvailable}</td>
+                <td>{totalObtained}</td>
+                <td></td>
+              </tr>
+            </tbody>
+          </table>
+
+          {/* Percentage Calculation */}
+          <div className="percentage-formula" style={{ marginTop: '15px' }}>
+            <span className="fraction">
+              <span className="numerator">{totalObtained}</span>
+              <span className="denominator">{totalAvailable}</span>
+            </span>
+            <span> × 100 = <strong>{percentage.toFixed(2)}%</strong></span>
+          </div>
+
+          {/* Assessment Outcome */}
+          <div className="outcome-section">
+            <div className="outcome-title">ASSESSMENT OUTCOME</div>
+            <div style={{ fontSize: '10pt', marginBottom: '8px' }}>
+              The candidate was found to be:
+            </div>
+            <div style={{ marginBottom: '8px' }}>
+              <span className="checkbox-option">
+                <span className={`checkbox-box ${outcome === 'Competent' ? 'checked' : ''}`}
+                  style={{ backgroundColor: outcome === 'Competent' ? '#000' : 'transparent', position: 'relative' }}>
+                  {outcome === 'Competent' && <span style={{ color: 'white', fontSize: '12px', position: 'absolute', top: '-2px', left: '2px' }}>✓</span>}
+                </span>
+                Competent
+              </span>
+              <span className="checkbox-option">
+                <span className={`checkbox-box ${outcome === 'Not Yet Competent' ? 'checked' : ''}`}
+                  style={{ backgroundColor: outcome === 'Not Yet Competent' ? '#000' : 'transparent', position: 'relative' }}>
+                  {outcome === 'Not Yet Competent' && <span style={{ color: 'white', fontSize: '12px', position: 'absolute', top: '-2px', left: '2px' }}>✓</span>}
+                </span>
+                Not yet Competent
+              </span>
+            </div>
+            <div className="instruction-text">
+              (Please tick as appropriate)
+            </div>
+            <div className="instruction-text">
+              (The candidate is competent if the candidate obtains at least {threshold}%)
+            </div>
+          </div>
+
+          {/* Feedback Sections */}
+          <div className="feedback-section">
+            <div className="feedback-title">Feedback from the Candidate:</div>
+            <div className="feedback-box">
+              {session?.feedback_from_candidate || ''}
+            </div>
+
+            <div className="feedback-title">Feedback to the Candidate:</div>
+            <div className="feedback-box">
+              {session?.feedback_to_candidate || ''}
+            </div>
+          </div>
+
+          {/* Signatures */}
+          <div className="signature-row">
+            <div><strong>Candidate Signature:</strong> <span className="signature-line"></span></div>
+            <div style={{ marginTop: '10px' }}><strong>Date:</strong> <span className="signature-line"></span></div>
+          </div>
+
+          <div className="signature-row" style={{ marginTop: '20px' }}>
+            <div><strong>Assessor's Signature:</strong> <span className="signature-line"></span></div>
+            <div style={{ marginTop: '10px' }}><strong>Date:</strong> <span className="signature-line"></span></div>
+          </div>
+
+          {session?.verification_status && (
+            <div style={{ marginTop: '20px', borderTop: '1px solid #000', paddingTop: '10px' }}>
+              <div className="feedback-title">Verification</div>
+              <div>Status: {session.verification_status}</div>
+              {session.verification_notes && <div>Notes: {session.verification_notes}</div>}
+              {session.verified_at && <div>Verified: {new Date(session.verified_at).toLocaleDateString()}</div>}
+            </div>
+          )}
+        </>
+      )}
+
+      {/* Page Number */}
+      <div className="page-number">Page {pageNumber} of {totalPages}</div>
+    </div>
+  );
+}
+
+// Helper component for rendering criteria rows
+function CriteriaRow({ criteria, allCriteria, results, isChecklist }) {
+  const result = isChecklist
+    ? results?.find(r => r.criteria_id === criteria.id)
+    : results?.find(r => r.item_id === criteria.id);
+
+  const marksObtained = result ? (parseFloat(result.marks_obtained) || 0) : 0;
+  const comments = result?.comments || '';
+
+  // Check if this is a subcriterion
+  const isSub = criteria.is_subcriterion || criteria.is_subitem;
+  const subcriteria = allCriteria.filter(c => (c.parent_item_id || c.parent_criteria_id) === criteria.id);
+
+  if (isSub) {
+    return (
+      <tr>
+        <td className="subcriterion">
+          {criteria.item_number}. {criteria.description}
+          {criteria.instruction && <div style={{ fontSize: '8pt', fontStyle: 'italic' }}>({criteria.instruction})</div>}
+        </td>
+        <td className="marks-column">{criteria.max_marks}</td>
+        <td className="obtained-column">{marksObtained}</td>
+        <td className="comments-column">{comments}</td>
+      </tr>
+    );
+  }
+
+  return (
+    <React.Fragment>
+      <tr>
+        <td>
+          {criteria.item_number}. {criteria.description}
+          {criteria.instruction && <div style={{ fontSize: '8pt', fontStyle: 'italic' }}>({criteria.instruction})</div>}
+        </td>
+        <td className="marks-column">{criteria.max_marks}</td>
+        <td className="obtained-column">{marksObtained}</td>
+        <td className="comments-column">{comments}</td>
+      </tr>
+      {subcriteria.map(sub => (
+        <tr key={sub.id}>
+          <td className="subcriterion">
+            {sub.item_number}. {sub.description}
+            {sub.instruction && <div style={{ fontSize: '8pt', fontStyle: 'italic' }}>({sub.instruction})</div>}
+          </td>
+          <td className="marks-column">{sub.max_marks}</td>
+          <td className="obtained-column">
+            {(() => {
+              const subResult = isChecklist
+                ? results?.find(r => r.criteria_id === sub.id)
+                : results?.find(r => r.item_id === sub.id);
+              return subResult ? (parseFloat(subResult.marks_obtained) || 0) : 0;
+            })()}
+          </td>
+          <td className="comments-column">
+            {(() => {
+              const subResult = isChecklist
+                ? results?.find(r => r.criteria_id === sub.id)
+                : results?.find(r => r.item_id === sub.id);
+              return subResult?.comments || '';
+            })()}
+          </td>
+        </tr>
+      ))}
+    </React.Fragment>
+  );
+}
+5. Assessment Builder
+components/AssessmentBuilder.js
+javascript
+import React, { useState, useEffect } from 'react';
+import { supabase } from '../lib/supabase';
+import { v4 as uuidv4 } from 'uuid';
+
+export default function AssessmentBuilder({ assessmentId, onAssessmentUpdate }) {
+  const [assessment, setAssessment] = useState({
+    title: '',
+    assessment_number: 1,
+    assessment_type: 'PRACTICAL',
+    department_name: 'ELECTRICAL & ELECTRONICS ENGINEERING',
+    course_title: 'ELECTRICAL INSTALLATION',
+    level: 'LEVEL 4, 5 & 6',
+    unit_code: 'ENG/CU/EI/CR/03/5/MA',
+    unit_name: 'Install Security System',
+    assessment_date: new Date().toISOString().split('T')[0],
+    duration_minutes: 180,
+    academic_year: '2026',
+    term: 'Term 1'
+  });
+
+  const [tasks, setTasks] = useState([]);
+  const [checklists, setChecklists] = useState([]);
+  const [activeTab, setActiveTab] = useState('details');
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState('');
+
+  useEffect(() => {
+    if (assessmentId) {
+      loadAssessment();
+    }
+  }, [assessmentId]);
+
+  const loadAssessment = async () => {
+    const { data, error } = await supabase
+      .from('assessments')
+      .select('*, assessment_tasks(*, assessment_items(*)), observation_checklists(*, checklist_criteria(*))')
+      .eq('id', assessmentId)
+      .single();
+
+    if (error) {
+      console.error('Error loading assessment:', error);
+      return;
+    }
+
+    setAssessment({
+      title: data.title,
+      assessment_number: data.assessment_number,
+      assessment_type: data.assessment_type,
+      department_name: data.department_name || assessment.department_name,
+      course_title: data.course_title || assessment.course_title,
+      level: data.level || assessment.level,
+      unit_code: data.unit_code || assessment.unit_code,
+      unit_name: data.unit_name || assessment.unit_name,
+      assessment_date: data.assessment_date,
+      duration_minutes: data.duration_minutes,
+      academic_year: data.academic_year,
+      term: data.term
+    });
+
+    setTasks(data.assessment_tasks?.sort((a, b) => a.sort_order - b.sort_order) || []);
+    setChecklists(data.observation_checklists?.sort((a, b) => a.sort_order - b.sort_order) || []);
+  };
+
+  const saveAssessment = async () => {
+    setSaving(true);
+    setMessage('');
+
+    try {
+      let assessmentData = { ...assessment, updated_at: new Date().toISOString() };
+
+      if (assessmentId) {
+        const { error } = await supabase
+          .from('assessments')
+          .update(assessmentData)
+          .eq('id', assessmentId);
+        if (error) throw error;
+      } else {
+        const { data, error } = await supabase
+          .from('assessments')
+          .insert([assessmentData])
+          .select()
+          .single();
+        if (error) throw error;
+        onAssessmentUpdate?.(data.id);
+      }
+
+      // Save tasks and items
+      await saveTasks();
+      await saveChecklists();
+
+      setMessage('Assessment saved successfully!');
+    } catch (error) {
+      setMessage('Error: ' + error.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const saveTasks = async () => {
+    for (let i = 0; i < tasks.length; i++) {
+      const task = tasks[i];
+      const taskData = {
+        assessment_id: assessmentId,
+        task_number: task.task_number || i + 1,
+        task_title: task.task_title || '',
+        sort_order: i
+      };
+
+      let taskId = task.id;
+      if (!taskId) {
+        const { data, error } = await supabase
+          .from('assessment_tasks')
+          .insert([taskData])
+          .select()
+          .single();
+        if (error) throw error;
+        taskId = data.id;
+      } else {
+        const { error } = await supabase
+          .from('assessment_tasks')
+          .update(taskData)
+          .eq('id', taskId);
+        if (error) throw error;
+      }
+
+      // Save items
+      for (let j = 0; j < (task.items || []).length; j++) {
+        const item = task.items[j];
+        const itemData = {
+          task_id: taskId,
+          item_number: item.item_number || `${j + 1}`,
+          description: item.description,
+          max_marks: item.max_marks,
+          is_subcriterion: item.is_subcriterion || false,
+          parent_item_id: item.parent_item_id || null,
+          sort_order: j,
+          instruction: item.instruction || null
+        };
+
+        if (!item.id) {
+          await supabase.from('assessment_items').insert([itemData]);
+        } else {
+          await supabase.from('assessment_items').update(itemData).eq('id', item.id);
+        }
+      }
+    }
+  };
+
+  const saveChecklists = async () => {
+    for (let i = 0; i < checklists.length; i++) {
+      const cl = checklists[i];
+      const clData = {
+        assessment_id: assessmentId,
+        title: cl.title || 'OBSERVATION CHECKLIST',
+        instruction: cl.instruction || null,
+        sort_order: i
+      };
+
+      let clId = cl.id;
+      if (!clId) {
+        const { data, error } = await supabase
+          .from('observation_checklists')
+          .insert([clData])
+          .select()
+          .single();
+        if (error) throw error;
+        clId = data.id;
+      } else {
+        const { error } = await supabase
+          .from('observation_checklists')
+          .update(clData)
+          .eq('id', clId);
+        if (error) throw error;
+      }
+
+      for (let j = 0; j < (cl.criteria || []).length; j++) {
+        const c = cl.criteria[j];
+        const cData = {
+          checklist_id: clId,
+          item_number: c.item_number || `${j + 1}`,
+          description: c.description,
+          max_marks: c.max_marks,
+          is_subitem: c.is_subitem || false,
+          parent_criteria_id: c.parent_criteria_id || null,
+          sort_order: j,
+          performance_indicator: c.performance_indicator || null,
+          competency_standard: c.competency_standard || null
+        };
+
+        if (!c.id) {
+          await supabase.from('checklist_criteria').insert([cData]);
+        } else {
+          await supabase.from('checklist_criteria').update(cData).eq('id', c.id);
+        }
+      }
+    }
+  };
+
+  const addTask = () => {
+    setTasks([...tasks, {
+      id: uuidv4(),
+      task_number: tasks.length + 1,
+      task_title: `TASK ${tasks.length + 1}`,
+      items: []
+    }]);
+  };
+
+  const removeTask = (idx) => {
+    setTasks(tasks.filter((_, i) => i !== idx));
+  };
+
+  const addItem = (taskIdx, isSub = false, parentId = null) => {
+    const newTasks = [...tasks];
+    const task = newTasks[taskIdx];
+    task.items = task.items || [];
+    task.items.push({
+      id: uuidv4(),
+      item_number: `${task.items.length + 1}`,
+      description: '',
+      max_marks: 1,
+      is_subcriterion: isSub,
+      parent_item_id: parentId,
+      instruction: ''
+    });
+    setTasks(newTasks);
+  };
+
+  const removeItem = (taskIdx, itemIdx) => {
+    const newTasks = [...tasks];
+    newTasks[taskIdx].items.splice(itemIdx, 1);
+    setTasks(newTasks);
+  };
+
+  const updateItem = (taskIdx, itemIdx, field, value) => {
+    const newTasks = [...tasks];
+    newTasks[taskIdx].items[itemIdx][field] = value;
+    setTasks(newTasks);
+  };
+
+  const addChecklist = () => {
+    setChecklists([...checklists, {
+      id: uuidv4(),
+      title: 'OBSERVATION CHECKLIST',
+      instruction: 'Items to be Evaluated: Please award marks as appropriate.',
+      criteria: []
+    }]);
+  };
+
+  const addChecklistItem = (clIdx, isSub = false, parentId = null) => {
+    const newChecklists = [...checklists];
+    const cl = newChecklists[clIdx];
+    cl.criteria = cl.criteria || [];
+    cl.criteria.push({
+      id: uuidv4(),
+      item_number: `${cl.criteria.length + 1}`,
+      description: '',
+      max_marks: 1,
+      is_subitem: isSub,
+      parent_criteria_id: parentId
+    });
+    setChecklists(newChecklists);
+  };
+
+  const removeChecklistItem = (clIdx, itemIdx) => {
+    const newChecklists = [...checklists];
+    newChecklists[clIdx].criteria.splice(itemIdx, 1);
+    setChecklists(newChecklists);
+  };
+
+  const updateChecklistItem = (clIdx, itemIdx, field, value) => {
+    const newChecklists = [...checklists];
+    newChecklists[clIdx].criteria[itemIdx][field] = value;
+    setChecklists(newChecklists);
+  };
+
+  return (
+    <div className="container-fluid">
+      <div className="d-flex justify-content-between align-items-center mb-3">
+        <h3><i className="bi bi-file-earmark-text"></i> Assessment Builder</h3>
+        <div>
+          <button className="btn btn-success me-2" onClick={saveAssessment} disabled={saving}>
+            <i className="bi bi-save"></i> {saving ? 'Saving...' : 'Save Assessment'}
+          </button>
+          <button className="btn btn-outline-secondary" onClick={() => window.print()}>
+            <i className="bi bi-printer"></i> Print Preview
+          </button>
+        </div>
+      </div>
+
+      {message && (
+        <div className={`alert ${message.includes('Error') ? 'alert-danger' : 'alert-success'} alert-dismissible fade show`}>
+          {message}
+          <button type="button" className="btn-close" onClick={() => setMessage('')}></button>
+        </div>
+      )}
+
+      {/* Tabs */}
+      <ul className="nav nav-tabs mb-3">
+        <li className="nav-item">
+          <button className={`nav-link ${activeTab === 'details' ? 'active' : ''}`} onClick={() => setActiveTab('details')}>
+            <i className="bi bi-info-circle"></i> Assessment Details
+          </button>
+        </li>
+        <li className="nav-item">
+          <button className={`nav-link ${activeTab === 'tasks' ? 'active' : ''}`} onClick={() => setActiveTab('tasks')}>
+            <i className="bi bi-list-task"></i> Tasks & Criteria
+          </button>
+        </li>
+        <li className="nav-item">
+          <button className={`nav-link ${activeTab === 'checklist' ? 'active' : ''}`} onClick={() => setActiveTab('checklist')}>
+            <i className="bi bi-clipboard-check"></i> Observation Checklist
+          </button>
+        </li>
+      </ul>
+
+      {/* Assessment Details Tab */}
+      {activeTab === 'details' && (
+        <div className="card">
+          <div className="card-body">
+            <div className="row">
+              <div className="col-md-6 mb-3">
+                <label className="form-label">Institution Name</label>
+                <input type="text" className="form-control"
+                  value={assessment.department_name}
+                  onChange={(e) => setAssessment({ ...assessment, department_name: e.target.value })} />
+              </div>
+              <div className="col-md-6 mb-3">
+                <label className="form-label">Course Title</label>
+                <input type="text" className="form-control"
+                  value={assessment.course_title}
+                  onChange={(e) => setAssessment({ ...assessment, course_title: e.target.value })} />
+              </div>
+              <div className="col-md-4 mb-3">
+                <label className="form-label">Level</label>
+                <input type="text" className="form-control"
+                  value={assessment.level}
+                  onChange={(e) => setAssessment({ ...assessment, level: e.target.value })} />
+              </div>
+              <div className="col-md-4 mb-3">
+                <label className="form-label">Unit Code</label>
+                <input type="text" className="form-control"
+                  value={assessment.unit_code}
+                  onChange={(e) => setAssessment({ ...assessment, unit_code: e.target.value })} />
+              </div>
+              <div className="col-md-4 mb-3">
+                <label className="form-label">Unit Name</label>
+                <input type="text" className="form-control"
+                  value={assessment.unit_name}
+                  onChange={(e) => setAssessment({ ...assessment, unit_name: e.target.value })} />
+              </div>
+              <div className="col-md-4 mb-3">
+                <label className="form-label">Assessment Title</label>
+                <input type="text" className="form-control"
+                  value={assessment.title}
+                  onChange={(e) => setAssessment({ ...assessment, title: e.target.value })} />
+              </div>
+              <div className="col-md-4 mb-3">
+                <label className="form-label">Assessment Number</label>
+                <input type="number" className="form-control"
+                  value={assessment.assessment_number}
+                  onChange={(e) => setAssessment({ ...assessment, assessment_number: parseInt(e.target.value) })} />
+              </div>
+              <div className="col-md-4 mb-3">
+                <label className="form-label">Assessment Type</label>
+                <select className="form-select"
+                  value={assessment.assessment_type}
+                  onChange={(e) => setAssessment({ ...assessment, assessment_type: e.target.value })}>
+                  <option value="PRACTICAL">PRACTICAL</option>
+                  <option value="THEORY">THEORY</option>
+                  <option value="ORAL">ORAL</option>
+                  <option value="PROJECT">PROJECT</option>
+                </select>
+              </div>
+              <div className="col-md-4 mb-3">
+                <label className="form-label">Assessment Date</label>
+                <input type="date" className="form-control"
+                  value={assessment.assessment_date}
+                  onChange={(e) => setAssessment({ ...assessment, assessment_date: e.target.value })} />
+              </div>
+              <div className="col-md-4 mb-3">
+                <label className="form-label">Duration (minutes)</label>
+                <input type="number" className="form-control"
+                  value={assessment.duration_minutes}
+                  onChange={(e) => setAssessment({ ...assessment, duration_minutes: parseInt(e.target.value) })} />
+              </div>
+              <div className="col-md-4 mb-3">
+                <label className="form-label">Academic Year</label>
+                <input type="text" className="form-control"
+                  value={assessment.academic_year}
+                  onChange={(e) => setAssessment({ ...assessment, academic_year: e.target.value })} />
+              </div>
+              <div className="col-md-4 mb-3">
+                <label className="form-label">Term</label>
+                <input type="text" className="form-control"
+                  value={assessment.term}
+                  onChange={(e) => setAssessment({ ...assessment, term: e.target.value })} />
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Tasks Tab */}
+      {activeTab === 'tasks' && (
+        <div>
+          <div className="d-flex justify-content-between mb-3">
+            <h5>Assessment Tasks</h5>
+            <button className="btn btn-primary btn-sm" onClick={addTask}>
+              <i className="bi bi-plus-circle"></i> Add Task
+            </button>
+          </div>
+
+          {tasks.map((task, taskIdx) => (
+            <div key={task.id} className="card mb-3">
+              <div className="card-header d-flex justify-content-between align-items-center bg-light">
+                <div className="d-flex align-items-center gap-2">
+                  <strong>TASK {task.task_number}</strong>
+                  <input type="text" className="form-control form-control-sm" style={{ width: '300px' }}
+                    value={task.task_title || ''}
+                    onChange={(e) => {
+                      const newTasks = [...tasks];
+                      newTasks[taskIdx].task_title = e.target.value;
+                      setTasks(newTasks);
+                    }}
+                    placeholder="Task title (optional)" />
+                </div>
+                <button className="btn btn-danger btn-sm" onClick={() => removeTask(taskIdx)}>
+                  <i className="bi bi-trash"></i>
+                </button>
+              </div>
+              <div className="card-body">
+                <table className="table table-sm table-bordered">
+                  <thead>
+                    <tr>
+                      <th style={{ width: '5%' }}>#</th>
+                      <th style={{ width: '50%' }}>Description</th>
+                      <th style={{ width: '10%' }}>Max Marks</th>
+                      <th style={{ width: '20%' }}>Instruction</th>
+                      <th style={{ width: '10%' }}>Sub?</th>
+                      <th style={{ width: '5%' }}></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(task.items || []).map((item, itemIdx) => (
+                      <tr key={item.id} className={item.is_subcriterion ? 'table-secondary' : ''}>
+                        <td>{item.item_number}</td>
+                        <td>
+                          <input type="text" className="form-control form-control-sm"
+                            value={item.description}
+                            onChange={(e) => updateItem(taskIdx, itemIdx, 'description', e.target.value)}
+                            placeholder="Criterion description" />
+                        </td>
+                        <td>
+                          <input type="number" className="form-control form-control-sm"
+                            value={item.max_marks}
+                            onChange={(e) => updateItem(taskIdx, itemIdx, 'max_marks', parseFloat(e.target.value) || 0)}
+                            min="0" step="0.5" />
+                        </td>
+                        <td>
+                          <input type="text" className="form-control form-control-sm"
+                            value={item.instruction || ''}
+                            onChange={(e) => updateItem(taskIdx, itemIdx, 'instruction', e.target.value)}
+                            placeholder="(Award max X marks)" />
+                        </td>
+                        <td>
+                          <input type="checkbox"
+                            checked={item.is_subcriterion || false}
+                            onChange={(e) => updateItem(taskIdx, itemIdx, 'is_subcriterion', e.target.checked)} />
+                        </td>
+                        <td>
+                          <button className="btn btn-outline-danger btn-sm" onClick={() => removeItem(taskIdx, itemIdx)}>
+                            <i className="bi bi-x"></i>
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <div className="d-flex gap-2">
+                  <button className="btn btn-outline-primary btn-sm" onClick={() => addItem(taskIdx)}>
+                    <i className="bi bi-plus"></i> Add Criterion
+                  </button>
+                  <button className="btn btn-outline-secondary btn-sm" onClick={() => {
+                    const lastItem = (task.items || [])[task.items.length - 1];
+                    addItem(taskIdx, true, lastItem?.id);
+                  }}>
+                    <i className="bi bi-plus"></i> Add Sub-criterion
+                  </button>
+                </div>
+              </div>
+            </div>
+          ))}
+
+          {tasks.length === 0 && (
+            <div className="alert alert-info">
+              No tasks added yet. Click "Add Task" to begin.
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Checklist Tab */}
+      {activeTab === 'checklist' && (
+        <div>
+          <div className="d-flex justify-content-between mb-3">
+            <h5>Observation Checklists</h5>
+            <button className="btn btn-primary btn-sm" onClick={addChecklist}>
+              <i className="bi bi-plus-circle"></i> Add Checklist
+            </button>
+          </div>
+
+          {checklists.map((cl, clIdx) => (
+            <div key={cl.id} className="card mb-3">
+              <div className="card-header bg-light">
+                <input type="text" className="form-control form-control-sm fw-bold"
+                  value={cl.title}
+                  onChange={(e) => {
+                    const newCl = [...checklists];
+                    newCl[clIdx].title = e.target.value;
+                    setChecklists(newCl);
+                  }} />
+              </div>
+              <div className="card-body">
+                <div className="mb-2">
+                  <label className="form-label small">Instruction</label>
+                  <input type="text" className="form-control form-control-sm"
+                    value={cl.instruction || ''}
+                    onChange={(e) => {
+                      const newCl = [...checklists];
+                      newCl[clIdx].instruction = e.target.value;
+                      setChecklists(newCl);
+                    }} />
+                </div>
+                <table className="table table-sm table-bordered">
+                  <thead>
+                    <tr>
+                      <th style={{ width: '5%' }}>#</th>
+                      <th style={{ width: '55%' }}>Description</th>
+                      <th style={{ width: '10%' }}>Max Marks</th>
+                      <th style={{ width: '10%' }}>Performance Indicator</th>
+                      <th style={{ width: '10%' }}>Sub?</th>
+                      <th style={{ width: '10%' }}></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(cl.criteria || []).map((c, cIdx) => (
+                      <tr key={c.id} className={c.is_subitem ? 'table-secondary' : ''}>
+                        <td>{c.item_number}</td>
+                        <td>
+                          <input type="text" className="form-control form-control-sm"
+                            value={c.description}
+                            onChange={(e) => updateChecklistItem(clIdx, cIdx, 'description', e.target.value)} />
+                        </td>
+                        <td>
+                          <input type="number" className="form-control form-control-sm"
+                            value={c.max_marks}
+                            onChange={(e) => updateChecklistItem(clIdx, cIdx, 'max_marks', parseFloat(e.target.value) || 0)}
+                            min="0" step="0.5" />
+                        </td>
+                        <td>
+                          <input type="text" className="form-control form-control-sm"
+                            value={c.performance_indicator || ''}
+                            onChange={(e) => updateChecklistItem(clIdx, cIdx, 'performance_indicator', e.target.value)} />
+                        </td>
+                        <td>
+                          <input type="checkbox"
+                            checked={c.is_subitem || false}
+                            onChange={(e) => updateChecklistItem(clIdx, cIdx, 'is_subitem', e.target.checked)} />
+                        </td>
+                        <td>
+                          <button className="btn btn-outline-danger btn-sm" onClick={() => removeChecklistItem(clIdx, cIdx)}>
+                            <i className="bi bi-x"></i>
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <div className="d-flex gap-2">
+                  <button className="btn btn-outline-primary btn-sm" onClick={() => addChecklistItem(clIdx)}>
+                    <i className="bi bi-plus"></i> Add Item
+                  </button>
+                  <button className="btn btn-outline-secondary btn-sm" onClick={() => {
+                    const lastItem = (cl.criteria || [])[cl.criteria.length - 1];
+                    addChecklistItem(clIdx, true, lastItem?.id);
+                  }}>
+                    <i className="bi bi-plus"></i> Add Sub-item
+                  </button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+6. Digital Assessment Interface
+components/DigitalAssessment.js
+javascript
+import React, { useState, useEffect } from 'react';
+import { supabase } from '../lib/supabase';
+import { validateMarks, calculateTaskSubtotal, calculateGrandTotal, calculatePercentage, determineCompetency } from '../lib/calculations';
+
+export default function DigitalAssessment({ sessionId, assessmentId, onComplete }) {
+  const [session, setSession] = useState(null);
+  const [tasks, setTasks] = useState([]);
+  const [checklists, setChecklists] = useState([]);
+  const [results, setResults] = useState({});
+  const [checklistResults, setChecklistResults] = useState({});
+  const [feedback, setFeedback] = useState({ from_candidate: '', to_candidate: '' });
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState('');
+  const [showReview, setShowReview] = useState(false);
+
+  useEffect(() => {
+    if (sessionId) {
+      loadSession();
+    }
+  }, [sessionId]);
+
+  const loadSession = async () => {
+    // Load session
+    const { data: sessionData, error: sessionError } = await supabase
+      .from('assessment_sessions')
+      .select('*, trainees(*), assessments(*)')
+      .eq('id', sessionId)
+      .single();
+
+    if (sessionError) {
+      setMessage('Error loading session: ' + sessionError.message);
+      return;
+    }
+    setSession(sessionData);
+
+    // Load tasks and items
+    const { data: tasksData } = await supabase
+      .from('assessment_tasks')
+      .select('*, assessment_items(*)')
+      .eq('assessment_id', assessmentId)
+      .order('sort_order');
+
+    if (tasksData) {
+      setTasks(tasksData.sort((a, b) => a.sort_order - b.sort_order));
+    }
+
+    // Load checklists
+    const { data: checklistsData } = await supabase
+      .from('observation_checklists')
+      .select('*, checklist_criteria(*)')
+      .eq('assessment_id', assessmentId)
+      .order('sort_order');
+
+    if (checklistsData) {
+      setChecklists(checklistsData.sort((a, b) => a.sort_order - b.sort_order));
+    }
+
+    // Load existing results
+    const { data: resultsData } = await supabase
+      .from('criterion_results')
+      .select('*')
+      .eq('session_id', sessionId);
+
+    if (resultsData) {
+      const resultsMap = {};
+      resultsData.forEach(r => { resultsMap[r.item_id] = r; });
+      setResults(resultsMap);
+    }
+
+    const { data: checklistResultsData } = await supabase
+      .from('checklist_results')
+      .select('*')
+      .eq('session_id', sessionId);
+
+    if (checklistResultsData) {
+      const resultsMap = {};
+      checklistResultsData.forEach(r => { resultsMap[r.criteria_id] = r; });
+      setChecklistResults(resultsMap);
+    }
+
+    // Load feedback
+    const { data: feedbackData } = await supabase
+      .from('assessment_feedback')
+      .select('*')
+      .eq('session_id', sessionId)
+      .single();
+
+    if (feedbackData) {
+      setFeedback({
+        from_candidate: feedbackData.feedback_from_candidate || '',
+        to_candidate: feedbackData.feedback_to_candidate || ''
+      });
+    }
+  };
+
+  const handleMarkChange = async (itemId, value, maxMarks) => {
+    const validation = validateMarks(value, maxMarks);
+    if (!validation.valid) {
+      setMessage(validation.error);
+      setTimeout(() => setMessage(''), 3000);
+      return;
+    }
+
+    const newResults = { ...results };
+    if (newResults[itemId]) {
+      newResults[itemId] = { ...newResults[itemId], marks_obtained: validation.value };
+    } else {
+      newResults[itemId] = { item_id: itemId, marks_obtained: validation.value, comments: '' };
+    }
+    setResults(newResults);
+
+    // Save to database
+    await supabase.from('criterion_results').upsert({
+      session_id: sessionId,
+      item_id: itemId,
+      marks_obtained: validation.value,
+      updated_at: new Date().toISOString()
+    }, { onConflict: 'session_id,item_id' });
+  };
+
+  const handleCommentChange = (itemId, value) => {
+    const newResults = { ...results };
+    if (newResults[itemId]) {
+      newResults[itemId] = { ...newResults[itemId], comments: value };
+    } else {
+      newResults[itemId] = { item_id: itemId, marks_obtained: 0, comments: value };
+    }
+    setResults(newResults);
+  };
+
+  const handleChecklistMarkChange = async (criteriaId, value, maxMarks) => {
+    const validation = validateMarks(value, maxMarks);
+    if (!validation.valid) {
+      setMessage(validation.error);
+      setTimeout(() => setMessage(''), 3000);
+      return;
+    }
+
+    const newResults = { ...checklistResults };
+    if (newResults[criteriaId]) {
+      newResults[criteriaId] = { ...newResults[criteriaId], marks_obtained: validation.value };
+    } else {
+      newResults[criteriaId] = { criteria_id: criteriaId, marks_obtained: validation.value, comments: '' };
+    }
+    setChecklistResults(newResults);
+
+    await supabase.from('checklist_results').upsert({
+      session_id: sessionId,
+      criteria_id: criteriaId,
+      marks_obtained: validation.value,
+      updated_at: new Date().toISOString()
+    }, { onConflict: 'session_id,criteria_id' });
+  };
+
+  const calculateTotals = () => {
+    const taskSubtotals = tasks.map(task => {
+      const items = task.assessment_items || [];
+      let subtotal = 0;
+      let maxSubtotal = 0;
+      items.forEach(item => {
+        if (!item.is_subcriterion) {
+          maxSubtotal += parseFloat(item.max_marks) || 0;
+          const r = results[item.id];
+          subtotal += r ? (parseFloat(r.marks_obtained) || 0) : 0;
+        }
+      });
+      return { taskNumber: task.task_number, subtotal, maxSubtotal };
+    });
+
+    let checklistSubtotal = 0;
+    let checklistMax = 0;
+    checklists.forEach(cl => {
+      (cl.checklist_criteria || []).forEach(c => {
+        if (!c.is_subitem) {
+          checklistMax += parseFloat(c.max_marks) || 0;
+          const r = checklistResults[c.id];
+          checklistSubtotal += r ? (parseFloat(r.marks_obtained) || 0) : 0;
+        }
+      });
+    });
+
+    const grandTotalAvailable = taskSubtotals.reduce((s, t) => s + t.maxSubtotal, 0) + checklistMax;
+    const grandTotalObtained = taskSubtotals.reduce((s, t) => s + t.subtotal, 0) + checklistSubtotal;
+    const percentage = calculatePercentage(grandTotalObtained, grandTotalAvailable);
+    const outcome = determineCompetency(percentage);
+
+    return { taskSubtotals, checklistSubtotal, checklistMax, grandTotalAvailable, grandTotalObtained, percentage, outcome };
+  };
+
+  const saveProgress = async () => {
+    setSaving(true);
+    const totals = calculateTotals();
+
+    await supabase.from('assessment_sessions').update({
+      grand_total_available: totals.grandTotalAvailable,
+      grand_total_obtained: totals.grandTotalObtained,
+      percentage: totals.percentage,
+      competency_outcome: totals.outcome,
+      updated_at: new Date().toISOString()
+    }).eq('id', sessionId);
+
+    // Save feedback
+    await supabase.from('assessment_feedback').upsert({
+      session_id: sessionId,
+      feedback_from_candidate: feedback.from_candidate,
+      feedback_to_candidate: feedback.to_candidate,
+      updated_at: new Date().toISOString()
+    }, { onConflict: 'session_id' });
+
+    setMessage('Progress saved successfully!');
+    setSaving(false);
+    setTimeout(() => setMessage(''), 3000);
+  };
+
+  const submitAssessment = async () => {
+    if (!window.confirm('Are you sure you want to submit this assessment? It will be locked for editing.')) {
+      return;
+    }
+
+    await saveProgress();
+
+    await supabase.from('assessment_sessions').update({
+      status: 'submitted',
+      updated_at: new Date().toISOString()
+    }).eq('id', sessionId);
+
+    setMessage('Assessment submitted successfully!');
+    onComplete?.();
+  };
+
+  const totals = calculateTotals();
+
+  if (!session) {
+    return <div className="text-center p-5">Loading assessment...</div>;
+  }
+
+  return (
+    <div className="digital-assessment">
+      <div className="d-flex justify-content-between align-items-center mb-4">
+        <div>
+          <h3><i className="bi bi-clipboard-data"></i> Digital Assessment</h3>
+          <p className="text-muted mb-0">
+            {session.assessments?.title} - {session.trainees?.full_name} ({session.trainees?.admission_number})
+          </p>
+        </div>
+        <div>
+          <button className="btn btn-outline-primary me-2" onClick={saveProgress} disabled={saving}>
+            <i className="bi bi-save"></i> {saving ? 'Saving...' : 'Save Progress'}
+          </button>
+          <button className="btn btn-warning me-2" onClick={() => setShowReview(!showReview)}>
+            <i className="bi bi-eye"></i> {showReview ? 'Hide' : 'Show'} Review
+          </button>
+          <button className="btn btn-success" onClick={submitAssessment}
+            disabled={session.status !== 'in_progress'}>
+            <i className="bi bi-check-circle"></i> Submit Assessment
+          </button>
+        </div>
+      </div>
+
+      {message && (
+        <div className={`alert ${message.includes('Error') ? 'alert-danger' : 'alert-success'} alert-dismissible fade show`}>
+          {message}
+          <button type="button" className="btn-close" onClick={() => setMessage('')}></button>
+        </div>
+      )}
+
+      {/* Status Badge */}
+      <div className="mb-3">
+        <span className={`badge ${
+          session.status === 'in_progress' ? 'bg-primary' :
+          session.status === 'submitted' ? 'bg-warning' :
+          session.status === 'verified' ? 'bg-success' : 'bg-secondary'
+        }`}>
+          Status: {session.status.replace('_', ' ').toUpperCase()}
+        </span>
+        {session.status !== 'in_progress' && (
+          <span className="badge bg-danger ms-2">LOCKED</span>
+        )}
+      </div>
+
+      {/* Observation Checklist */}
+      {checklists.map((cl) => (
+        <div key={cl.id} className="card mb-4">
+          <div className="card-header bg-primary text-white">
+            <h5 className="mb-0">{cl.title}</h5>
+            {cl.instruction && <small>{cl.instruction}</small>}
+          </div>
+          <div className="card-body p-0">
+            <table className="table table-bordered mb-0">
+              <thead className="table-light">
+                <tr>
+                  <th style={{ width: '55%' }}>Item to be Evaluated</th>
+                  <th style={{ width: '12%' }}>Marks Available</th>
+                  <th style={{ width: '12%' }}>Marks Obtained</th>
+                  <th style={{ width: '21%' }}>Comment</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(cl.checklist_criteria || []).map((c) => (
+                  <tr key={c.id} className={c.is_subitem ? 'table-secondary' : ''}>
+                    <td className={c.is_subitem ? 'ps-4' : ''}>
+                      {c.is_subitem && '• '}{c.item_number}. {c.description}
+                    </td>
+                    <td className="text-center">{c.max_marks}</td>
+                    <td className="text-center">
+                      {session.status === 'in_progress' ? (
+                        <input type="number" className="form-control form-control-sm marks-input"
+                          value={checklistResults[c.id]?.marks_obtained || 0}
+                          onChange={(e) => handleChecklistMarkChange(c.id, e.target.value, c.max_marks)}
+                          min="0" max={c.max_marks} step="0.5" />
+                      ) : (
+                        <span>{checklistResults[c.id]?.marks_obtained || 0}</span>
+                      )}
+                    </td>
+                    <td>
+                      {session.status === 'in_progress' ? (
+                        <input type="text" className="form-control form-control-sm"
+                          value={checklistResults[c.id]?.comments || ''}
+                          onChange={(e) => {
+                            const newResults = { ...checklistResults };
+                            if (newResults[c.id]) {
+                              newResults[c.id] = { ...newResults[c.id], comments: e.target.value };
+                            } else {
+                              newResults[c.id] = { criteria_id: c.id, marks_obtained: 0, comments: e.target.value };
+                            }
+                            setChecklistResults(newResults);
+                          }} />
+                      ) : (
+                        <span>{checklistResults[c.id]?.comments || ''}</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ))}
+
+      {/* Tasks */}
+      {tasks.map((task) => {
+        const taskTotal = totals.taskSubtotals.find(t => t.taskNumber === task.task_number);
+        return (
+          <div key={task.id} className="card mb-4">
+            <div className="card-header bg-dark text-white">
+              <h5 className="mb-0">TASK {task.task_number} {task.task_title && `- ${task.task_title}`}</h5>
+            </div>
+            <div className="card-body p-0">
+              <table className="table table-bordered mb-0">
+                <thead className="table-light">
+                  <tr>
+                    <th style={{ width: '55%' }}>Criterion</th>
+                    <th style={{ width: '12%' }}>Max Marks</th>
+                    <th style={{ width: '12%' }}>Marks Obtained</th>
+                    <th style={{ width: '21%' }}>Comment</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(task.assessment_items || []).map((item) => (
+                    <tr key={item.id} className={item.is_subcriterion ? 'table-secondary' : ''}>
+                      <td className={item.is_subcriterion ? 'ps-4' : ''}>
+                        {item.is_subcriterion && '• '}{item.item_number}. {item.description}
+                        {item.instruction && <div><small className="text-muted fst-italic">({item.instruction})</small></div>}
+                      </td>
+                      <td className="text-center">{item.max_marks}</td>
+                      <td className="text-center">
+                        {session.status === 'in_progress' ? (
+                          <input type="number" className="form-control form-control-sm marks-input"
+                            value={results[item.id]?.marks_obtained || 0}
+                            onChange={(e) => handleMarkChange(item.id, e.target.value, item.max_marks)}
+                            min="0" max={item.max_marks} step="0.5" />
+                        ) : (
+                          <span>{results[item.id]?.marks_obtained || 0}</span>
+                        )}
+                      </td>
+                      <td>
+                        {session.status === 'in_progress' ? (
+                          <input type="text" className="form-control form-control-sm"
+                            value={results[item.id]?.comments || ''}
+                            onChange={(e) => handleCommentChange(item.id, e.target.value)} />
+                        ) : (
+                          <span>{results[item.id]?.comments || ''}</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                  <tr className="table-warning">
+                    <td className="text-end fw-bold">Sub-Total {task.task_number}</td>
+                    <td className="text-center fw-bold">{taskTotal?.maxSubtotal || 0}</td>
+                    <td className="text-center fw-bold">{taskTotal?.subtotal || 0}</td>
+                    <td></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        );
+      })}
+
+      {/* Grand Total Summary */}
+      <div className="card mb-4 border-primary">
+        <div className="card-header bg-primary text-white">
+          <h5 className="mb-0">ASSESSMENT SUMMARY</h5>
+        </div>
+        <div className="card-body">
+          <div className="row">
+            <div className="col-md-3">
+              <div className="text-center p-3 border rounded">
+                <div className="text-muted small">Grand Total Available</div>
+                <div className="fs-3 fw-bold">{totals.grandTotalAvailable}</div>
+              </div>
+            </div>
+            <div className="col-md-3">
+              <div className="text-center p-3 border rounded">
+                <div className="text-muted small">Grand Total Obtained</div>
+                <div className="fs-3 fw-bold text-primary">{totals.grandTotalObtained}</div>
+              </div>
+            </div>
+            <div className="col-md-3">
+              <div className="text-center p-3 border rounded">
+                <div className="text-muted small">Percentage</div>
+                <div className="fs-3 fw-bold">{totals.percentage.toFixed(2)}%</div>
+              </div>
+            </div>
+            <div className="col-md-3">
+              <div className={`text-center p-3 border rounded ${
+                totals.outcome === 'Competent' ? 'bg-success text-white' : 'bg-danger text-white'
+              }`}>
+                <div className="small">Outcome</div>
+                <div className="fs-4 fw-bold">{totals.outcome}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Feedback */}
+      <div className="card mb-4">
+        <div className="card-header">
+          <h5 className="mb-0">Feedback</h5>
+        </div>
+        <div className="card-body">
+          <div className="mb-3">
+            <label className="form-label fw-bold">Feedback from the Candidate:</label>
+            <textarea className="form-control" rows="3"
+              value={feedback.from_candidate}
+              onChange={(e) => setFeedback({ ...feedback, from_candidate: e.target.value })}
+              disabled={session.status !== 'in_progress'} />
+          </div>
+          <div className="mb-3">
+            <label className="form-label fw-bold">Feedback to the Candidate:</label>
+            <textarea className="form-control" rows="3"
+              value={feedback.to_candidate}
+              onChange={(e) => setFeedback({ ...feedback, to_candidate: e.target.value })}
+              disabled={session.status !== 'in_progress'} />
+          </div>
+        </div>
+      </div>
+
+      {/* Review Modal */}
+      {showReview && (
+        <div className="modal d-block" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+          <div className="modal-dialog modal-lg">
+            <div className="modal-content">
+              <div className="modal-header">
+                <h5 className="modal-title">Assessment Review</h5>
+                <button className="btn-close" onClick={() => setShowReview(false)}></button>
+              </div>
+              <div className="modal-body">
+                <p><strong>Candidate:</strong> {session.trainees?.full_name}</p>
+                <p><strong>Admission No:</strong> {session.trainees?.admission_number}</p>
+                <p><strong>Date:</strong> {session.assessment_date}</p>
+                <hr />
+                <p><strong>Grand Total:</strong> {totals.grandTotalObtained} / {totals.grandTotalAvailable}</p>
+                <p><strong>Percentage:</strong> {totals.percentage.toFixed(2)}%</p>
+                <p><strong>Outcome:</strong> <span className={`badge ${totals.outcome === 'Competent' ? 'bg-success' : 'bg-danger'}`}>{totals.outcome}</span></p>
+              </div>
+              <div className="modal-footer">
+                <button className="btn btn-secondary" onClick={() => setShowReview(false)}>Close</button>
+                <button className="btn btn-success" onClick={submitAssessment}
+                  disabled={session.status !== 'in_progress'}>
+                  Confirm Submission
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+7. PDF Generator
+lib/pdf-generator.js
+javascript
+import React from 'react';
+import {
+  Document, Page, Text, View, StyleSheet, Image, Font
+} from '@react-pdf/renderer';
+
+// Register fonts
+Font.register({
+  family: 'Times-Roman',
+  fonts: [
+    { src: 'https://fonts.gstatic.com/s/timesnewroman/v1/TimesNewRoman.ttf' }
+  ]
+});
+
+const styles = StyleSheet.create({
+  page: {
+    padding: 40,
+    fontSize: 10,
+    fontFamily: 'Times-Roman'
+  },
+  header: {
+    textAlign: 'center',
+    marginBottom: 15,
+    borderBottom: 2,
+    borderBottomColor: '#000',
+    paddingBottom: 10
+  },
+  logo: {
+    width: 60,
+    height: 60,
+    alignSelf: 'center',
+    marginBottom: 8
+  },
+  institutionName: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    textAlign: 'center',
+    textTransform: 'uppercase',
+    marginBottom: 4
+  },
+  departmentName: {
+    fontSize: 12,
+    fontWeight: 'bold',
+    textAlign: 'center',
+    textTransform: 'uppercase',
+    marginBottom: 4
+  },
+  courseTitle: {
+    fontSize: 11,
+    fontWeight: 'bold',
+    textAlign: 'center',
+    textTransform: 'uppercase',
+    marginBottom: 3
+  },
+  level: {
+    fontSize: 10,
+    fontWeight: 'bold',
+    textAlign: 'center',
+    textTransform: 'uppercase',
+    marginBottom: 3
+  },
+  unitCode: {
+    fontSize: 9,
+    textAlign: 'center',
+    marginBottom: 2
+  },
+  unitName: {
+    fontSize: 10,
+    fontWeight: 'bold',
+    textAlign: 'center',
+    marginBottom: 8
+  },
+  assessmentType: {
+    fontSize: 11,
+    fontWeight: 'bold',
+    textAlign: 'center',
+    textTransform: 'uppercase',
+    marginBottom: 10
+  },
+  sectionHeading: {
+    fontSize: 10,
+    fontWeight: 'bold',
+    textAlign: 'center',
+    textTransform: 'uppercase',
+    marginBottom: 8,
+    marginTop: 10
+  },
+  candidateTable: {
+    width: '100%',
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: '#000'
+  },
+  candidateRow: {
+    flexDirection: 'row',
+    borderBottomWidth: 1,
+    borderBottomColor: '#000'
+  },
+  candidateLabel: {
+    width: '30%',
+    padding: 4,
+    fontWeight: 'bold',
+    borderRightWidth: 1,
+    borderRightColor: '#000',
+    backgroundColor: '#f8f9fa'
+  },
+  candidateValue: {
+    width: '70%',
+    padding: 4
+  },
+  table: {
+    width: '100%',
+    borderWidth: 1,
+    borderColor: '#000',
+    marginBottom: 10
+  },
+  tableRow: {
+    flexDirection: 'row',
+    borderBottomWidth: 1,
+    borderBottomColor: '#000'
+  },
+  tableHeader: {
+    backgroundColor: '#f0f0f0',
+    fontWeight: 'bold'
+  },
+  itemCol: {
+    width: '55%',
+    padding: 4,
+    borderRightWidth: 1,
+    borderRightColor: '#000'
+  },
+  marksCol: {
+    width: '12%',
+    padding: 4,
+    textAlign: 'center',
+    borderRightWidth: 1,
+    borderRightColor: '#000'
+  },
+  obtainedCol: {
+    width: '12%',
+    padding: 4,
+    textAlign: 'center',
+    borderRightWidth: 1,
+    borderRightColor: '#000'
+  },
+  commentsCol: {
+    width: '21%',
+    padding: 4
+  },
+  taskHeader: {
+    backgroundColor: '#e9ecef',
+    fontWeight: 'bold',
+    textAlign: 'center',
+    padding: 6
+  },
+  subtotalRow: {
+    backgroundColor: '#f8f9fa',
+    fontWeight: 'bold'
+  },
+  grandTotalRow: {
+    backgroundColor: '#e9ecef',
+    fontWeight: 'bold',
+    fontSize: 11
+  },
+  subcriterion: {
+    paddingLeft: 15,
+    fontSize: 9
+  },
+  outcomeSection: {
+    borderWidth: 1,
+    borderColor: '#000',
+    padding: 10,
+    marginTop: 15,
+    marginBottom: 15
+  },
+  outcomeTitle: {
+    fontWeight: 'bold',
+    textAlign: 'center',
+    textTransform: 'uppercase',
+    fontSize: 10,
+    marginBottom: 8
+  },
+  checkboxRow: {
+    flexDirection: 'row',
+    marginBottom: 5
+  },
+  checkboxOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginRight: 30,
+    fontSize: 10
+  },
+  checkboxBox: {
+    width: 12,
+    height: 12,
+    borderWidth: 1,
+    borderColor: '#000',
+    marginRight: 5
+  },
+  checkboxChecked: {
+    backgroundColor: '#000'
+  },
+  feedbackSection: {
+    marginTop: 10,
+    marginBottom: 10
+  },
+  feedbackTitle: {
+    fontWeight: 'bold',
+    fontStyle: 'italic',
+    fontSize: 10,
+    marginBottom: 3
+  },
+  feedbackBox: {
+    borderWidth: 1,
+    borderColor: '#000',
+    minHeight: 40,
+    padding: 5,
+    marginBottom: 8,
+    fontSize: 9
+  },
+  signatureRow: {
+    marginTop: 15,
+    fontSize: 10
+  },
+  signatureLine: {
+    borderBottomWidth: 1,
+    borderBottomColor: '#000',
+    width: 150,
+    display: 'inline-block'
+  },
+  pageNumber: {
+    position: 'absolute',
+    bottom: 30,
+    right: 40,
+    fontSize: 8,
+    color: '#666'
+  },
+  instructionText: {
+    fontSize: 8,
+    fontStyle: 'italic',
+    marginBottom: 5
+  },
+  percentageFormula: {
+    textAlign: 'center',
+    fontSize: 10,
+    marginVertical: 10
+  }
+});
+
+export function generateAssessmentPDF({ assessment, session, tasks, checklists, results, checklistResults, institution }) {
+  const candidate = session?.trainee || {};
+
+  const calculateSubtotal = (items, itemResults) => {
+    return items.reduce((sum, item) => {
+      if (!item.is_subcriterion) {
+        const r = itemResults?.find(r => r.item_id === item.id);
+        return sum + (r ? parseFloat(r.marks_obtained) || 0 : 0);
+      }
+      return sum;
+    }, 0);
+  };
+
+  const calculateChecklistSubtotal = (criteria, criteriaResults) => {
+    return criteria.reduce((sum, c) => {
+      if (!c.is_subitem) {
+        const r = criteriaResults?.find(r => r.criteria_id === c.id);
+        return sum + (r ? parseFloat(r.marks_obtained) || 0 : 0);
+      }
+      return sum;
+    }, 0);
+  };
+
+  const calculateMaxSubtotal = (items) => {
+    return items.reduce((sum, item) => {
+      if (!item.is_subcriterion) {
+        return sum + (parseFloat(item.max_marks) || 0);
+      }
+      return sum;
+    }, 0);
+  };
+
+  const calculateChecklistMax = (criteria) => {
+    return criteria.reduce((sum, c) => {
+      if (!c.is_subitem) {
+        return sum + (parseFloat(c.max_marks) || 0);
+      }
+      return sum;
+    }, 0);
+  };
+
+  const totalAvailable = tasks.reduce((sum, t) => sum + calculateMaxSubtotal(t.items || t.assessment_items || []), 0) +
+    checklists.reduce((sum, cl) => sum + calculateChecklistMax(cl.criteria || cl.checklist_criteria || []), 0);
+  const totalObtained = tasks.reduce((sum, t) => sum + calculateSubtotal(t.items || t.assessment_items || [], results), 0) +
+    checklists.reduce((sum, cl) => sum + calculateChecklistSubtotal(cl.criteria || cl.checklist_criteria || [], checklistResults), 0);
+  const percentage = totalAvailable > 0 ? (totalObtained / totalAvailable) * 100 : 0;
+  const threshold = institution?.competency_threshold || 50;
+  const outcome = percentage >= threshold ? 'Competent' : 'Not Yet Competent';
+
+  return (
+    <Document>
+      {/* Page 1: Header and Observation Checklist */}
+      <Page size="A4" style={styles.page} wrap={false}>
+        <View style={styles.header}>
+          {institution?.logo_url && <Image src={institution.logo_url} style={styles.logo} />}
+          <Text style={styles.institutionName}>{institution?.name || 'THIKA TECHNICAL TRAINING INSTITUTE'}</Text>
+          <Text style={styles.departmentName}>{assessment?.department_name || 'ELECTRICAL & ELECTRONICS ENGINEERING'}</Text>
+          <Text style={styles.courseTitle}>{assessment?.course_title || 'ELECTRICAL INSTALLATION'}</Text>
+          <Text style={styles.level}>{assessment?.level || 'LEVEL 4, 5 & 6'}</Text>
+          <Text style={styles.unitCode}>Unit Code: {assessment?.unit_code || 'ENG/CU/EI/CR/03/5/MA'}</Text>
+          <Text style={styles.unitName}>{assessment?.unit_name || 'Install Security System'}</Text>
+          <Text style={styles.assessmentType}>
+            {assessment?.assessment_type || 'PRACTICAL'} ASSESSMENT {assessment?.assessment_number || '1'}
+          </Text>
+          <Text style={styles.sectionHeading}>OBSERVATION CHECKLIST</Text>
+        </View>
+
+        {/* Candidate Info */}
+        <View style={styles.candidateTable}>
+          <View style={styles.candidateRow}>
+            <Text style={styles.candidateLabel}>Candidate's Name</Text>
+            <Text style={styles.candidateValue}>{candidate?.full_name || ''}</Text>
+          </View>
+          <View style={styles.candidateRow}>
+            <Text style={styles.candidateLabel}>Candidate's Adm. No.</Text>
+            <Text style={styles.candidateValue}>{candidate?.admission_number || ''}</Text>
+          </View>
+          <View style={styles.candidateRow}>
+            <Text style={styles.candidateLabel}>Date of Assessment</Text>
+            <Text style={styles.candidateValue}>{session?.assessment_date || ''}</Text>
+          </View>
+        </View>
+
+        <Text style={styles.instructionText}>
+          Items to be Evaluated: Please award marks as appropriate. Give a brief comment on your observation.
+        </Text>
+
+        {/* Observation Checklist Table */}
+        <View style={styles.table}>
+          <View style={[styles.tableRow, styles.tableHeader]}>
+            <Text style={styles.itemCol}>Item to be Evaluated</Text>
+            <Text style={styles.marksCol}>Marks Available</Text>
+            <Text style={styles.obtainedCol}>Marks Obtained</Text>
+            <Text style={styles.commentsCol}>Comment</Text>
+          </View>
+          <View style={[styles.tableRow, { backgroundColor: '#f0f0f0' }]}>
+            <Text style={{ ...styles.itemCol, textAlign: 'center', fontWeight: 'bold' }}>OBSERVATION CHECKLIST</Text>
+            <Text style={styles.marksCol}></Text>
+            <Text style={styles.obtainedCol}></Text>
+            <Text style={styles.commentsCol}></Text>
+          </View>
+          {checklists.map((cl) => (
+            <React.Fragment key={cl.id}>
+              {(cl.criteria || cl.checklist_criteria || []).map((c) => (
+                <View key={c.id} style={styles.tableRow}>
+                  <Text style={c.is_subitem ? styles.subcriterion : styles.itemCol}>
+                    {c.is_subitem ? '• ' : ''}{c.item_number}. {c.description}
+                  </Text>
+                  <Text style={styles.marksCol}>{c.max_marks}</Text>
+                  <Text style={styles.obtainedCol}>
+                    {(() => {
+                      const r = checklistResults?.find(r => r.criteria_id === c.id);
+                      return r ? (parseFloat(r.marks_obtained) || 0) : 0;
+                    })()}
+                  </Text>
+                  <Text style={styles.commentsCol}>
+                    {(() => {
+                      const r = checklistResults?.find(r => r.criteria_id === c.id);
+                      return r?.comments || '';
+                    })()}
+                  </Text>
+                </View>
+              ))}
+              <View style={[styles.tableRow, styles.subtotalRow]}>
+                <Text style={{ ...styles.itemCol, textAlign: 'right' }}>Sub-total</Text>
+                <Text style={styles.marksCol}>{calculateChecklistMax(cl.criteria || cl.checklist_criteria || [])}</Text>
+                <Text style={styles.obtainedCol}>{calculateChecklistSubtotal(cl.criteria || cl.checklist_criteria || [], checklistResults)}</Text>
+                <Text style={styles.commentsCol}></Text>
+              </View>
+            </React.Fragment>
+          ))}
+        </View>
+
+        <Text style={styles.pageNumber}>Page 1 of 3</Text>
+      </Page>
+
+      {/* Page 2: Tasks */}
+      <Page size="A4" style={styles.page} wrap={false}>
+        {tasks.map((task) => {
+          const items = task.items || task.assessment_items || [];
+          return (
+            <View key={task.id} style={{ marginBottom: 15 }}>
+              <View style={styles.table}>
+                <View style={[styles.tableRow, styles.taskHeader]}>
+                  <Text style={{ textAlign: 'center', width: '100%' }}>
+                    TASK {task.task_number} {task.task_title ? `- ${task.task_title}` : ''}
+                  </Text>
+                </View>
+                <View style={[styles.tableRow, styles.tableHeader]}>
+                  <Text style={styles.itemCol}>Criterion</Text>
+                  <Text style={styles.marksCol}>Max Marks</Text>
+                  <Text style={styles.obtainedCol}>Obtained</Text>
+                  <Text style={styles.commentsCol}>Comment</Text>
+                </View>
+                {items.map((item) => (
+                  <View key={item.id} style={styles.tableRow}>
+                    <Text style={item.is_subcriterion ? styles.subcriterion : styles.itemCol}>
+                      {item.is_subcriterion ? '• ' : ''}{item.item_number}. {item.description}
+                      {item.instruction ? `\n(${item.instruction})` : ''}
+                    </Text>
+                    <Text style={styles.marksCol}>{item.max_marks}</Text>
+                    <Text style={styles.obtainedCol}>
+                      {(() => {
+                        const r = results?.find(r => r.item_id === item.id);
+                        return r ? (parseFloat(r.marks_obtained) || 0) : 0;
+                      })()}
+                    </Text>
+                    <Text style={styles.commentsCol}>
+                      {(() => {
+                        const r = results?.find(r => r.item_id === item.id);
+                        return r?.comments || '';
+                      })()}
+                    </Text>
+                  </View>
+                ))}
+                <View style={[styles.tableRow, styles.subtotalRow]}>
+                  <Text style={{ ...styles.itemCol, textAlign: 'right' }}>Sub-Total {task.task_number}</Text>
+                  <Text style={styles.marksCol}>{calculateMaxSubtotal(items)}</Text>
+                  <Text style={styles.obtainedCol}>{calculateSubtotal(items, results)}</Text>
+                  <Text style={styles.commentsCol}></Text>
+                </View>
+              </View>
+            </View>
+          );
+        })}
+
+        <Text style={styles.pageNumber}>Page 2 of 3</Text>
+      </Page>
+
+      {/* Page 3: Final Results */}
+      <Page size="A4" style={styles.page} wrap={false}>
+        {/* Grand Total */}
+        <View style={styles.table}>
+          <View style={[styles.tableRow, styles.grandTotalRow]}>
+            <Text style={{ ...styles.itemCol, textAlign: 'right' }}>GRAND TOTAL</Text>
+            <Text style={styles.marksCol}>{totalAvailable}</Text>
+            <Text style={styles.obtainedCol}>{totalObtained}</Text>
+            <Text style={styles.commentsCol}></Text>
+          </View>
+        </View>
+
+        {/* Percentage */}
+        <View style={styles.percentageFormula}>
+          <Text>
+            {totalObtained} / {totalAvailable} × 100 = {percentage.toFixed(2)}%
+          </Text>
+        </View>
+
+        {/* Assessment Outcome */}
+        <View style={styles.outcomeSection}>
+          <Text style={styles.outcomeTitle}>ASSESSMENT OUTCOME</Text>
+          <Text style={{ fontSize: 10, marginBottom: 8 }}>The candidate was found to be:</Text>
+          <View style={styles.checkboxRow}>
+            <View style={styles.checkboxOption}>
+              <View style={[styles.checkboxBox, outcome === 'Competent' && styles.checkboxChecked]} />
+              <Text>Competent</Text>
+            </View>
+            <View style={styles.checkboxOption}>
+              <View style={[styles.checkboxBox, outcome === 'Not Yet Competent' && styles.checkboxChecked]} />
+              <Text>Not yet Competent</Text>
+            </View>
+          </View>
+          <Text style={styles.instructionText}>(Please tick as appropriate)</Text>
+          <Text style={styles.instructionText}>
+            (The candidate is competent if the candidate obtains at least {threshold}%)
+          </Text>
+        </View>
+
+        {/* Feedback */}
+        <View style={styles.feedbackSection}>
+          <Text style={styles.feedbackTitle}>Feedback from the Candidate:</Text>
+          <View style={styles.feedbackBox}>
+            <Text>{session?.feedback_from_candidate || ''}</Text>
+          </View>
+          <Text style={styles.feedbackTitle}>Feedback to the Candidate:</Text>
+          <View style={styles.feedbackBox}>
+            <Text>{session?.feedback_to_candidate || ''}</Text>
+          </View>
+        </View>
+
+        {/* Signatures */}
+        <View style={styles.signatureRow}>
+          <Text>Candidate Signature: _________________________</Text>
+          <Text style={{ marginTop: 10 }}>Date: _________________________</Text>
+        </View>
+        <View style={{ ...styles.signatureRow, marginTop: 20 }}>
+          <Text>Assessor's Signature: _________________________</Text>
+          <Text style={{ marginTop: 10 }}>Date: _________________________</Text>
+        </View>
+
+        <Text style={styles.pageNumber}>Page 3 of 3</Text>
+      </Page>
+    </Document>
+  );
+}
+8. API Routes
+app/api/generate-pdf/route.js
+javascript
+import { NextResponse } from 'next/server';
+import { supabase } from '@/lib/supabase';
+import { renderToBuffer } from '@react-pdf/renderer';
+import { generateAssessmentPDF } from '@/lib/pdf-generator';
+
+export async function POST(request) {
+  try {
+    const { sessionId } = await request.json();
+
+    // Load session with all related data
+    const { data: session, error: sessionError } = await supabase
+      .from('assessment_sessions')
+      .select(`
+        *,
+        trainees(*),
+        assessments(*),
+        assessment_feedback(*)
+      `)
+      .eq('id', sessionId)
+      .single();
+
+    if (sessionError) throw sessionError;
+
+    // Load tasks and items
+    const { data: tasks } = await supabase
+      .from('assessment_tasks')
+      .select('*, assessment_items(*)')
+      .eq('assessment_id', session.assessment_id)
+      .order('sort_order');
+
+    // Load checklists
+    const { data: checklists } = await supabase
+      .from('observation_checklists')
+      .select('*, checklist_criteria(*)')
+      .eq('assessment_id', session.assessment_id)
+      .order('sort_order');
+
+    // Load results
+    const { data: results } = await supabase
+      .from('criterion_results')
+      .select('*')
+      .eq('session_id', sessionId);
+
+    const { data: checklistResults } = await supabase
+      .from('checklist_results')
+      .select('*')
+      .eq('session_id', sessionId);
+
+    // Load institution
+    const { data: institution } = await supabase
+      .from('institutions')
+      .select('*')
+      .eq('id', session.assessments.institution_id)
+      .single();
+
+    // Generate PDF
+    const pdfDocument = generateAssessmentPDF({
+      assessment: session.assessments,
+      session,
+      tasks: tasks || [],
+      checklists: checklists || [],
+      results: results || [],
+      checklistResults: checklistResults || [],
+      institution
+    });
+
+    const pdfBuffer = await renderToBuffer(pdfDocument);
+
+    // Upload to Supabase Storage
+    const fileName = `assessments/${sessionId}/assessment_${session.trainees?.admission_number || 'unknown'}.pdf`;
+    const { data: uploadData, error: uploadError } = await supabase.storage
+      .from('generated-documents')
+      .upload(fileName, pdfBuffer, {
+        contentType: 'application/pdf',
+        upsert: true
+      });
+
+    if (uploadError) throw uploadError;
+
+    // Get public URL
+    const { data: urlData } = supabase.storage
+      .from('generated-documents')
+      .getPublicUrl(fileName);
+
+    // Save document record
+    await supabase.from('generated_documents').insert({
+      session_id: sessionId,
+      document_type: 'assessment_pdf',
+      storage_path: fileName,
+      public_url: urlData.publicUrl
+    });
+
+    return NextResponse.json({
+      success: true,
+      url: urlData.publicUrl,
+      path: fileName
+    });
+  } catch (error) {
+    console.error('PDF generation error:', error);
+    return NextResponse.json({ success: false, error: error.message }, { status: 500 });
+  }
+}
+9. Main Pages
+app/assessments/builder/page.js
+javascript
+'use client';
+
+import React, { useState } from 'react';
+import AssessmentBuilder from '@/components/AssessmentBuilder';
+import AssessmentPaper from '@/components/AssessmentPaper';
+import { supabase } from '@/lib/supabase';
+
+export default function BuilderPage() {
+  const [assessmentId, setAssessmentId] = useState(null);
+  const [assessment, setAssessment] = useState(null);
+  const [tasks, setTasks] = useState([]);
+  const [checklists, setChecklists] = useState([]);
+
+  const handleAssessmentUpdate = (id) => {
+    setAssessmentId(id);
+    loadAssessment(id);
+  };
+
+  const loadAssessment = async (id) => {
+    const { data } = await supabase
+      .from('assessments')
+      .select('*, assessment_tasks(*, assessment_items(*)), observation_checklists(*, checklist_criteria(*))')
+      .eq('id', id)
+      .single();
+
+    if (data) {
+      setAssessment(data);
+      setTasks(data.assessment_tasks?.sort((a, b) => a.sort_order - b.sort_order) || []);
+      setChecklists(data.observation_checklists?.sort((a, b) => a.sort_order - b.sort_order) || []);
+    }
+  };
+
+  return (
+    <div className="builder-container">
+      <div className="builder-left-panel">
+        <AssessmentBuilder
+          assessmentId={assessmentId}
+          onAssessmentUpdate={handleAssessmentUpdate}
+        />
+      </div>
+      <div className="builder-right-panel">
+        <h5 className="mb-3"><i className="bi bi-eye"></i> Live Preview</h5>
+        {assessment ? (
+          <>
+            <AssessmentPaper
+              assessment={assessment}
+              tasks={tasks}
+              checklists={checklists}
+              results={[]}
+              checklistResults={[]}
+              institution={{ name: 'THIKA TECHNICAL TRAINING INSTITUTE' }}
+              pageNumber={1}
+              totalPages={3}
+            />
+            {tasks.length > 0 && (
+              <AssessmentPaper
+                assessment={assessment}
+                tasks={tasks}
+                checklists={checklists}
+                results={[]}
+                checklistResults={[]}
+                institution={{ name: 'THIKA TECHNICAL TRAINING INSTITUTE' }}
+                pageNumber={2}
+                totalPages={3}
+              />
+            )}
+            <AssessmentPaper
+              assessment={assessment}
+              tasks={tasks}
+              checklists={checklists}
+              results={[]}
+              checklistResults={[]}
+              institution={{ name: 'THIKA TECHNICAL TRAINING INSTITUTE' }}
+              pageNumber={3}
+              totalPages={3}
+            />
+          </>
+        ) : (
+          <div className="text-center text-muted p-5">
+            <i className="bi bi-file-earmark" style={{ fontSize: '48px' }}></i>
+            <p>Start building your assessment to see the preview</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+app/assessments/[id]/execute/page.js
+javascript
+'use client';
+
+import React, { useState, useEffect } from 'react';
+import { useParams } from 'next/navigation';
+import DigitalAssessment from '@/components/DigitalAssessment';
+import { supabase } from '@/lib/supabase';
+
+export default function ExecuteAssessmentPage() {
+  const params = useParams();
+  const [sessionId, setSessionId] = useState(null);
+  const [trainees, setTrainees] = useState([]);
+  const [selectedTrainee, setSelectedTrainee] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    loadTrainees();
+  }, []);
+
+  const loadTrainees = async () => {
+    const { data, error } = await supabase
+      .from('trainees')
+      .select('*')
+      .order('full_name');
+
+    if (data) setTrainees(data);
+    setLoading(false);
+  };
+
+  const createSession = async () => {
+    if (!selectedTrainee) {
+      alert('Please select a trainee');
+      return;
+    }
+
+    const { data, error } = await supabase
+      .from('assessment_sessions')
+      .insert([{
+        assessment_id: params.id,
+        trainee_id: selectedTrainee,
+        assessment_date: new Date().toISOString().split('T')[0],
+        status: 'in_progress',
+        competency_outcome: 'Pending'
+      }])
+      .select()
+      .single();
+
+    if (error) {
+      alert('Error creating session: ' + error.message);
+      return;
+    }
+
+    setSessionId(data.id);
+  };
+
+  if (loading) {
+    return <div className="text-center p-5">Loading...</div>;
+  }
+
+  if (!sessionId) {
+    return (
+      <div className="container mt-4">
+        <h2><i className="bi bi-play-circle"></i> Start Assessment</h2>
+        <div className="card mt-3">
+          <div className="card-body">
+            <div className="mb-3">
+              <label className="form-label">Select Trainee</label>
+              <select className="form-select"
+                value={selectedTrainee || ''}
+                onChange={(e) => setSelectedTrainee(e.target.value)}>
+                <option value="">-- Select Trainee --</option>
+                {trainees.map(t => (
+                  <option key={t.id} value={t.id}>
+                    {t.full_name} ({t.admission_number})
+                  </option>
+                ))}
+              </select>
+            </div>
+            <button className="btn btn-primary" onClick={createSession}
+              disabled={!selectedTrainee}>
+              <i className="bi bi-play"></i> Start Assessment
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <DigitalAssessment
+      sessionId={sessionId}
+      assessmentId={params.id}
+      onComplete={() => {
+        alert('Assessment submitted successfully!');
+      }}
+    />
+  );
+}
+10. Layout and Main Page
+app/layout.js
+javascript
+import './globals.css';
+
+export const metadata = {
+  title: 'TVET e-ASSESS - Assessment Management System',
+  description: 'Competency-Based Education and Training Assessment System'
+};
+
+export default function RootLayout({ children }) {
+  return (
+    <html lang="en">
+      <body>
+        <nav className="navbar navbar-expand-lg navbar-dark bg-dark no-print">
+          <div className="container-fluid">
+            <a className="navbar-brand" href="/">
+              <i className="bi bi-mortarboard-fill"></i> TVET e-ASSESS
+            </a>
+            <button className="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+              <span className="navbar-toggler-icon"></span>
+            </button>
+            <div className="collapse navbar-collapse" id="navbarNav">
+              <ul className="navbar-nav">
+                <li className="nav-item">
+                  <a className="nav-link" href="/assessments">
+                    <i className="bi bi-folder"></i> Assessments
+                  </a>
+                </li>
+                <li className="nav-item">
+                  <a className="nav-link" href="/assessments/builder">
+                    <i className="bi bi-plus-circle"></i> Create Assessment
+                  </a>
+                </li>
+                <li className="nav-item">
+                  <a className="nav-link" href="/assessments/sessions">
+                    <i className="bi bi-clipboard-data"></i> Sessions
+                  </a>
+                </li>
+              </ul>
+            </div>
+          </div>
+        </nav>
+        {children}
+      </body>
+    </html>
+  );
+}
+app/page.js
+javascript
+export default function Home() {
+  return (
+    <div className="container mt-5">
+      <div className="text-center">
+        <h1 className="display-4"><i className="bi bi-mortarboard-fill"></i> TVET e-ASSESS</h1>
+        <p className="lead">Competency-Based Education and Training Assessment Management System</p>
+        <hr />
+        <div className="row mt-4">
+          <div className="col-md-4">
+            <div className="card h-100">
+              <div className="card-body text-center">
+                <i className="bi bi-file-earmark-text display-4 text-primary"></i>
+                <h5 className="card-title mt-3">Create Assessments</h5>
+                <p className="card-text">Build professional practical assessment papers with tasks, criteria and observation checklists.</p>
+                <a href="/assessments/builder" className="btn btn-primary">
+                  <i className="bi bi-plus-circle"></i> New Assessment
+                </a>
+              </div>
+            </div>
+          </div>
+          <div className="col-md-4">
+            <div className="card h-100">
+              <div className="card-body text-center">
+                <i className="bi bi-clipboard-data display-4 text-success"></i>
+                <h5 className="card-title mt-3">Conduct Assessments</h5>
+                <p className="card-text">Digitally assess trainees with automatic calculations and competency determination.</p>
+                <a href="/assessments" className="btn btn-success">
+                  <i className="bi bi-play-circle"></i> Start Assessment
+                </a>
+              </div>
+            </div>
+          </div>
+          <div className="col-md-4">
+            <div className="card h-100">
+              <div className="card-body text-center">
+                <i className="bi bi-file-pdf display-4 text-danger"></i>
+                <h5 className="card-title mt-3">Generate Reports</h5>
+                <p className="card-text">Generate official PDF assessment documents matching institutional standards.</p>
+                <a href="/assessments/sessions" className="btn btn-danger">
+                  <i className="bi bi-file-pdf"></i> View Reports
+                </a>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-5 p-4 bg-light rounded">
+          <h4>System Features</h4>
+          <div className="row text-start mt-3">
+            <div className="col-md-6">
+              <ul className="list-unstyled">
+                <li><i className="bi bi-check-circle-fill text-success"></i> Hierarchical criteria with subcriteria</li>
+                <li><i className="bi bi-check-circle-fill text-success"></i> Observation checklists</li>
+                <li><i className="bi bi-check-circle-fill text-success"></i> Automatic mark calculations</li>
+                <li><i className="bi bi-check-circle-fill text-success"></i> Competency outcome determination</li>
+              </ul>
+            </div>
+            <div className="col-md-6">
+              <ul className="list-unstyled">
+                <li><i className="bi bi-check-circle-fill text-success"></i> Professional PDF generation</li>
+                <li><i className="bi bi-check-circle-fill text-success"></i> Assessment verification workflow</li>
+                <li><i className="bi bi-check-circle-fill text-success"></i> Audit trail and versioning</li>
+                <li><i className="bi bi-check-circle-fill text-success"></i> Supabase integration</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+11. Environment Configuration
+.env.local
+env
+NEXT_PUBLIC_SUPABASE_URL=your_supabase_url
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key
+SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
+next.config.js
+javascript
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+  reactStrictMode: true,
+  images: {
+    domains: ['your_supabase_storage_domain.supabase.co']
+  },
+  webpack: (config) => {
+    config.resolve.fallback = {
+      ...config.resolve.fallback,
+      fs: false,
+      net: false,
+      tls: false
+    };
+    return config;
+  }
+};
+
+module.exports = nextConfig;
+12. Setup Instructions
+bash
+# 1. Clone and install
+cd tvet-eassess
+npm install
+
+# 2. Set up Supabase
+# - Create a new Supabase project
+# - Run the schema.sql in the SQL editor
+# - Create a storage bucket called 'generated-documents'
+# - Update .env.local with your Supabase credentials
+
+# 3. Run development server
+npm run dev
+
+# 4. Build for production
+npm run build
+npm start
+
+# 5. Deploy to Vercel
+vercel --prod
+Key Implementation Highlights
+Exact Document Reproduction: The AssessmentPaper component closely matches the reference image with:
+Centered institutional header with logo
+Four-column observation checklist table
+Task sections with merged headers
+Subcriteria with bullet indentation
+Subtotal rows per task
+Grand total with dynamic percentage calculation
+Assessment outcome with checkboxes
+Feedback sections and signature lines
+Dynamic Calculations: The calculations.js module handles all mark validation and computation server-side to prevent manipulation.
+Three-Page Structure: The PDF generator creates exactly three pages matching the reference layout, with automatic page numbering.
+Security: Row Level Security policies ensure assessors can only modify their own in-progress sessions, and verification prevents self-verification.
+Audit Trail: All changes are logged with old/new values for compliance.
+Scalability: The system supports unlimited tasks, criteria, and subcriteria while maintaining the official document structure.

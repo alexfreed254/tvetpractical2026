@@ -1,0 +1,144 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --tvet-canvas: #F5F7FB;
+    --tvet-surface: #FFFFFF;
+    --tvet-navy: #0F2744;
+    --tvet-cobalt: #1D4ED8;
+    --tvet-border: #DCE3EE;
+  }
+
+  body {
+    font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+    background-color: var(--tvet-canvas);
+    color: #0F172A;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .font-mono {
+    font-family: 'IBM Plex Mono', ui-monospace, SFMono-Regular, monospace;
+  }
+
+  button:focus-visible,
+  a:focus-visible,
+  input:focus-visible,
+  select:focus-visible,
+  textarea:focus-visible {
+    outline: 2px solid #1D4ED8;
+    outline-offset: 2px;
+  }
+}
+
+/* Official A4 Assessment Paper Document Styles */
+.a4-sheet {
+  width: 210mm;
+  min-height: 297mm;
+  background: #FFFFFF;
+  padding: 15mm;
+  margin: 0 auto;
+  color: #000000;
+  font-family: 'Times New Roman', 'Source Serif 4', Times, serif;
+  box-shadow: 0 2px 6px rgba(15, 39, 68, 0.09), 0 12px 28px rgba(15, 39, 68, 0.06);
+  border: 1px solid #CBD5E1;
+  position: relative;
+  box-sizing: border-box;
+}
+
+.a4-sheet-header {
+  text-align: center;
+  margin-bottom: 16px;
+  border-bottom: 2px solid #000000;
+  padding-bottom: 10px;
+}
+
+.a4-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 10px 0;
+  font-size: 9.5pt;
+}
+
+.a4-table th,
+.a4-table td {
+  border: 1px solid #000000;
+  padding: 5px 7px;
+  vertical-align: top;
+}
+
+.a4-table th {
+  background-color: #EEF2F7;
+  font-weight: bold;
+  text-align: center;
+}
+
+.a4-candidate-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 12px 0;
+  font-size: 10pt;
+}
+
+.a4-candidate-table td {
+  border: 1px solid #000000;
+  padding: 5px 8px;
+}
+
+.a4-candidate-table .a4-label-cell {
+  font-weight: bold;
+  width: 185px;
+  background-color: #F4F6FA;
+}
+
+.a4-fraction {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  vertical-align: middle;
+  margin: 0 6px;
+}
+
+.a4-fraction-num {
+  border-bottom: 1px solid #000000;
+  padding: 0 8px 2px 8px;
+}
+
+.a4-fraction-den {
+  padding: 2px 8px 0 8px;
+}
+
+@media print {
+  @page {
+    size: A4 portrait;
+    margin: 0;
+  }
+
+  body {
+    background: #FFFFFF !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  .no-print {
+    display: none !important;
+  }
+
+  .print-only-container {
+    padding: 0 !important;
+    margin: 0 !important;
+    background: #FFFFFF !important;
+  }
+
+  .a4-sheet {
+    box-shadow: none !important;
+    border: none !important;
+    margin: 0 !important;
+    page-break-after: always;
+    break-after: page;
+  }
+
+  .a4-sheet:last-child {
+    page-break-after: auto;
+    break-after: auto;
+  }
+}

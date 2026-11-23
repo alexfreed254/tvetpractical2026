@@ -1,0 +1,6 @@
+{
+  "name": "TVET e-ASSESS",
+  "description": "Competency-Based Education and Training (CBET) assessment builder, digital grading workbench, 3-page A4 paper generator, and Next.js + Supabase project ZIP exporter.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
